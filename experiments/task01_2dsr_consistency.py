@@ -249,6 +249,9 @@ def parse_args():
                    help="用于读取 COLMAP 相机/深度时对应的子目录（默认 images_8）")
     p.add_argument("--sr_size",     type=int, default=SR_SIZE,
                    help="SR 图分辨率（默认 800）")
+    p.add_argument("--depth_mode",  default="midas",
+                   choices=["colmap", "midas"],
+                   help="深度来源：midas（默认，稠密单目）或 colmap（COLMAP 稀疏插值）")
     p.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--save_visuals",action="store_true",
@@ -278,6 +281,7 @@ def main():
     print(f" Frames   : {args.n_frames} per scene")
     print(f" SR size  : {args.sr_size}×{args.sr_size}")
     print(f" SR 来源  : {'预计算目录  ' + args.sr_dir if args.sr_dir else '实时 SwinIR ×4'}")
+    print(f" 深度来源 : {args.depth_mode}")
     print(f" Device   : {device}")
     print()
 
@@ -328,6 +332,17 @@ def main():
         print(f"  SR ready in {time.time()-t1:.1f}s")
 
         # ── warp + metrics ────────────────────────────────────────────────────
+        # ── compute / override depth maps ────────────────────────────────────────
+        if args.depth_mode == "midas":
+            print("  Estimating MiDaS depth on LR images …")
+            from utils.depth_midas import depth_batch
+            t_midas = time.time()
+            midas_depths = depth_batch([f["image_lr"] for f in frames_t], device)
+            for f, d in zip(frames_t, midas_depths):
+                f["depth_lr"] = d
+            print(f"  MiDaS done in {time.time()-t_midas:.1f}s")
+
+        # ── warp + metrics ─────────────────────────────────────────────────────
         print(f"  Warping {len(frames_t)*(len(frames_t)-1)} pairs …")
         t2 = time.time()
         pair_results = warp_and_compare(sr_images, frames_t, device, sr_size=args.sr_size)
