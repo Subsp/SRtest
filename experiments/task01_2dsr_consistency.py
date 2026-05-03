@@ -89,18 +89,17 @@ def load_sr_from_dir(
     frames_t: list,
     sr_scene_dir: str,
     device: str,
-    sr_size: int = SR_SIZE,
+    sr_size: int = None,   # None = keep native resolution
 ) -> list:
     """
-    Load pre-computed SR images from disk.
+    Load pre-computed SR images from disk at their native resolution.
 
     Matches by frame name stem. If a frame is missing, raises FileNotFoundError.
-    Resizes to sr_size × sr_size if the image on disk differs (with a warning).
+    If sr_size is given AND the image is square, resize to (sr_size, sr_size).
+    Otherwise the native (possibly non-square) resolution is preserved.
 
     Returns list of (3, H, W) float tensors on `device`.
     """
-    import torch
-    import torch.nn.functional as F
     from PIL import Image as PILImage
 
     index = _build_sr_index(sr_scene_dir)
@@ -119,10 +118,13 @@ def load_sr_from_dir(
                 f"Available: {sorted(index.keys())[:5]} …"
             )
         img = PILImage.open(index[name]).convert("RGB")
-        if img.size != (sr_size, sr_size):
-            print(f"  [WARNING] SR image {name} is {img.size}, expected "
-                  f"{sr_size}×{sr_size}. Resizing with bicubic.")
-            img = img.resize((sr_size, sr_size), PILImage.BICUBIC)
+        W_img, H_img = img.size   # PIL: (W, H)
+
+        # Only resize if explicitly requested AND sizes differ
+        if sr_size is not None and (W_img, H_img) != (sr_size, sr_size):
+            print(f"  [INFO] SR image {name}: {W_img}×{H_img} → loaded as-is "
+                  f"(non-square native resolution, K will be recomputed)")
+
         t = torch.from_numpy(np.array(img, dtype=np.uint8)).float().div(255.0)
         t = t.permute(2, 0, 1).to(device)          # (3, H, W)
         sr_images.append(t)
@@ -156,8 +158,19 @@ def warp_and_compare(
     """
     n = len(frames_t)
     results = []
-    # Scale factor: sr_size / LR_SIZE (e.g. 800 / 200 = 4)
-    depth_scale = sr_size // LR_SIZE
+
+    # ── Detect actual SR dimensions from first image ──────────────────────────
+    _, H_sr, W_sr = sr_images[0].shape
+    print(f"  SR image size detected: {W_sr}×{H_sr}")
+
+    # ── Precompute K_sr for each frame at actual SR resolution ────────────────
+    # K_sr = scale_K(K_lr, (LR_SIZE, LR_SIZE) → (W_sr, H_sr))
+    from utils.colmap_reader import scale_K as _scale_K
+    K_sr_list = []
+    for fi in frames_t:
+        K_lr_np = fi["K_lr"].cpu().numpy()
+        K_sr_np = _scale_K(K_lr_np, (LR_SIZE, LR_SIZE), (W_sr, H_sr))
+        K_sr_list.append(torch.from_numpy(K_sr_np).float().to(device))
 
     for idx_i, idx_j in tqdm(
         list(itertools.permutations(range(n), 2)),
@@ -165,11 +178,15 @@ def warp_and_compare(
     ):
         fi  = frames_t[idx_i]
         fj  = frames_t[idx_j]
-        sri = sr_images[idx_i]   # (3, sr_size, sr_size)
+        sri = sr_images[idx_i]   # (3, H_sr, W_sr)
         srj = sr_images[idx_j]
+        K_sr_i = K_sr_list[idx_i]
+        K_sr_j = K_sr_list[idx_j]
 
-        # Upsample COLMAP sparse depth of view i from LR→SR resolution
-        depth_sr_i = upsample_depth(fi["depth_lr"], scale=depth_scale).to(device)
+        # Upsample COLMAP sparse depth of view i from LR → actual SR resolution
+        depth_sr_i = upsample_depth(
+            fi["depth_lr"], target_hw=(H_sr, W_sr)
+        ).to(device)
 
         # Backward-warp srj into view i's perspective
         # Camera params are defined at LR resolution; we need them at SR resolution
@@ -177,10 +194,10 @@ def warp_and_compare(
         warped, valid_mask = backward_warp(
             src_image = srj,
             depth_tgt = depth_sr_i,
-            K_src     = fj["K_sr"],
+            K_src     = K_sr_j,
             R_src     = fj["R"],
             t_src     = fj["t"],
-            K_tgt     = fi["K_sr"],
+            K_tgt     = K_sr_i,
             R_tgt     = fi["R"],
             t_tgt     = fi["t"],
         )
@@ -436,12 +453,19 @@ def _save_visual_comparison(scene, pair_results, frames_t, sr_images, vis_dir, d
         srj = sr_images[fj_idx]
 
         from utils.warp import upsample_depth, backward_warp
-        depth_scale = sr_size // LR_SIZE
-        depth_sr_i = upsample_depth(frames_t[fi_idx]["depth_lr"], scale=depth_scale).to(device)
+        from utils.colmap_reader import scale_K as _scale_K
+        _, H_sr_v, W_sr_v = sr_images[fi_idx].shape
+        depth_sr_i = upsample_depth(
+            frames_t[fi_idx]["depth_lr"], target_hw=(H_sr_v, W_sr_v)
+        ).to(device)
+        K_lr_i = frames_t[fi_idx]["K_lr"].cpu().numpy()
+        K_lr_j = frames_t[fj_idx]["K_lr"].cpu().numpy()
+        K_sr_vi = torch.from_numpy(_scale_K(K_lr_i, (LR_SIZE, LR_SIZE), (W_sr_v, H_sr_v))).float().to(device)
+        K_sr_vj = torch.from_numpy(_scale_K(K_lr_j, (LR_SIZE, LR_SIZE), (W_sr_v, H_sr_v))).float().to(device)
         warped, _ = backward_warp(
             srj, depth_sr_i,
-            frames_t[fj_idx]["K_sr"], frames_t[fj_idx]["R"], frames_t[fj_idx]["t"],
-            frames_t[fi_idx]["K_sr"], frames_t[fi_idx]["R"], frames_t[fi_idx]["t"],
+            K_sr_vj, frames_t[fj_idx]["R"], frames_t[fj_idx]["t"],
+            K_sr_vi, frames_t[fi_idx]["R"], frames_t[fi_idx]["t"],
         )
         warped_np = warped.cpu().permute(1, 2, 0).numpy()
         diff_np   = np.abs(sri - warped_np) * 5.0

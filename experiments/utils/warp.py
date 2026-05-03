@@ -105,14 +105,25 @@ def backward_warp(
     return warped, valid
 
 
-def upsample_depth(depth_lr: torch.Tensor, scale: int = 4) -> torch.Tensor:
+def upsample_depth(
+    depth_lr: torch.Tensor,
+    scale: int = None,
+    target_hw: tuple = None,
+) -> torch.Tensor:
     """
-    Bilinearly upsample a depth map from LR to SR resolution.
+    Bilinearly upsample a depth map.
 
-    depth_lr: (H, W)  →  returns (H*scale, W*scale)
+    depth_lr   : (H, W)
+    scale      : integer scale factor (used when target is square or uniform)
+    target_hw  : (H_out, W_out) explicit target size (takes priority over scale)
 
-    Depth values (metric) are preserved; only spatial layout is upsampled.
+    Returns: (H_out, W_out)
     """
     d = depth_lr.unsqueeze(0).unsqueeze(0)   # (1, 1, H, W)
-    d_up = F.interpolate(d, scale_factor=scale, mode="bilinear", align_corners=False)
+    if target_hw is not None:
+        d_up = F.interpolate(d, size=target_hw, mode="bilinear", align_corners=False)
+    elif scale is not None:
+        d_up = F.interpolate(d, scale_factor=scale, mode="bilinear", align_corners=False)
+    else:
+        raise ValueError("Either scale or target_hw must be provided")
     return d_up.squeeze(0).squeeze(0)
