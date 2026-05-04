@@ -50,7 +50,7 @@ def oracle_stack_for_frames(
     frames_np: List[Dict[str, Any]],
     oracle_scene_dir: str,
     target_hw: tuple[int, int],
-    device: str,
+    device: str = "cpu",
     dtype=torch.float32,
 ) -> tuple[Optional[torch.Tensor], List[Dict[str, Any]]]:
     """
@@ -97,6 +97,12 @@ def _parse_args():
                    help="Per-scene oracle root (directory containing *.npy or train/…/depth/)")
     p.add_argument("--n_frames", type=int, default=32,
                    help="Max training views sampled per epoch (filtered by oracle availability).")
+    p.add_argument(
+        "--views_per_forward",
+        type=int,
+        default=1,
+        help="Views per HR-Head forward (default 1 saves VRAM; V>1 needs more GPU memory).",
+    )
     p.add_argument("--target_lr_size", type=int, default=LR_SIZE)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--depth_source", choices=("colmap", "vggt"), default="colmap")
@@ -164,7 +170,7 @@ def main():
         seed=args.seed,
     )
     oracle_tensor, frames_f = oracle_stack_for_frames(
-        frames, oracle_scene, (SR_SIZE, SR_SIZE), args.device
+        frames, oracle_scene, (SR_SIZE, SR_SIZE), device="cpu"
     )
     if oracle_tensor is None or len(frames_f) == 0:
         raise RuntimeError(
@@ -172,28 +178,29 @@ def main():
             f"Produce .npy with task02_oracle_render.py and check stem names vs images."
         )
 
-    frames_t = frames_to_tensors(frames_f, device=args.device)
+    frames_t = frames_to_tensors(frames_f, device="cpu")
     print(f"[train] {len(frames_f)} / {len(frames)} views with oracle supervision")
 
     if args.depth_source == "vggt":
+        frames_t_gpu = frames_to_tensors(frames_f, device=args.device)
         mv, pfn = _setup_vggt(args.vggt_root, args.device)
-        vo = run_vggt_on_frames(mv, pfn, frames_t, args.device)
+        vo = run_vggt_on_frames(mv, pfn, frames_t_gpu, args.device)
         for i, f in enumerate(frames_t):
-            d = torch.from_numpy(vo[i]["depth_vggt"]).float().to(args.device).clamp_min(1e-3)
-            f["depth_lr"] = d.unsqueeze(0)
+            d = torch.from_numpy(vo[i]["depth_vggt"]).float().clamp_min(1e-3)
+            f["depth_lr"] = d
 
     sr_scale = max(1, int(round(SR_SIZE / float(args.target_lr_size))))
     use_sr = priors is not None and not args.force_no_sr_prior
-    depth_b = torch.stack([f["depth_lr"] for f in frames_t], dim=0).unsqueeze(0).unsqueeze(2).clamp_min(1e-3)
-    rgb_b = torch.stack([f["image_lr"] for f in frames_t], dim=0).unsqueeze(0)
 
-    sr_b = None
+    # Keep training batches on CPU; move only ``views_per_forward`` slices to GPU (OOM fix).
+    depth_all = torch.stack([f["depth_lr"] for f in frames_t], dim=0).unsqueeze(1).clamp_min(1e-3)  # V,1,h,w
+    rgb_all = torch.stack([f["image_lr"] for f in frames_t], dim=0)  # V,3,h,w
+    sr_all: Optional[torch.Tensor] = None
     if use_sr:
         hv = []
         missing = []
         for f in frames_t:
-            k = "prior_sr_hr" in f
-            if k:
+            if "prior_sr_hr" in f:
                 hv.append(f["prior_sr_hr"])
             else:
                 missing.append(f["name"])
@@ -201,7 +208,11 @@ def main():
             print(f"[WARN] Missing priors for {missing}: train without StableSR conditioning.")
             use_sr = False
         else:
-            sr_b = torch.stack(hv, dim=0).unsqueeze(0)
+            sr_all = torch.stack(hv, dim=0)  # V,3,SR,SR
+
+    vp = max(1, int(args.views_per_forward))
+    if vp > 1:
+        print(f"[mem] views_per_forward={vp} — reduce to 1 if you still hit OOM.")
 
     model = HRGeometricPriorHead(
         use_rgb=True,
@@ -211,7 +222,8 @@ def main():
     ).to(args.device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    oracle_b = oracle_tensor.unsqueeze(0)  # 1,V,H,W
+    oracle_cpu = oracle_tensor  # V,H,W on CPU
+    V = depth_all.shape[0]
 
     outp = Path(args.output_dir).resolve()
     outp.mkdir(parents=True, exist_ok=True)
@@ -221,46 +233,71 @@ def main():
     for ep in pbar:
         model.train()
         opt.zero_grad(set_to_none=True)
-        fwd_kw = {"depth_lr": depth_b, "rgb_lr": rgb_b}
-        if use_sr:
-            fwd_kw["sr_prior_hr"] = sr_b
-        with torch.cuda.amp.autocast(enabled=args.device.startswith("cuda")):
-            out = model(**fwd_kw)
 
-        depth_hr = out["depth_hr"]  # 1,V,1,H,W
-        normals = out["normal_hr"]
-        conf_hr = out["confidence_hr"]
+        depth_loss_epoch = 0.0
+        diag_scales: List[torch.Tensor] = []
+        n_loss_epoch = 0.0
+        conf_epoch = 0.0
 
-        depth_loss_accum = depth_b.new_tensor(0.0)
-        diag_scales = []
-        for vi in range(depth_hr.shape[1]):
-            pack = PriorPackDepth(
-                depth=oracle_b[0, vi],
-                confidence=torch.ones_like(oracle_b[0, vi]),
-                normal_world=None,
-            )
-            oracle_valid = oracle_b[0, vi] > 1e-6
-            lv, diag = geom_depth_loss_l1(
-                depth_hr[0, vi, 0],
-                pack,
-                extra_mask=oracle_valid,
-            )
-            depth_loss_accum = depth_loss_accum + lv
-            diag_scales.append(diag["scale"])
+        for v0 in range(0, V, vp):
+            v1 = min(V, v0 + vp)
+            sl = slice(v0, v1)
+            nb = v1 - v0
 
-        vcount = max(1, depth_hr.shape[1])
-        depth_loss_accum = depth_loss_accum / float(vcount)
+            depth_b = depth_all[sl].unsqueeze(0).to(args.device, non_blocking=True)  # 1,nb,1,h,w
+            rgb_b = rgb_all[sl].unsqueeze(0).to(args.device, non_blocking=True)
+            fwd_kw: Dict[str, Any] = {"depth_lr": depth_b, "rgb_lr": rgb_b}
+            if use_sr and sr_all is not None:
+                fwd_kw["sr_prior_hr"] = sr_all[sl].unsqueeze(0).to(args.device, non_blocking=True)
+
+            with torch.cuda.amp.autocast(enabled=args.device.startswith("cuda")):
+                out = model(**fwd_kw)
+
+            depth_hr = out["depth_hr"]
+            normals = out["normal_hr"]
+            conf_hr = out["confidence_hr"]
+
+            chunk_depth_loss = depth_hr.new_zeros(())
+            for j in range(nb):
+                vi = v0 + j
+                o_oracle = oracle_cpu[vi].to(args.device, non_blocking=True)
+                pack = PriorPackDepth(
+                    depth=o_oracle,
+                    confidence=torch.ones_like(o_oracle),
+                    normal_world=None,
+                )
+                oracle_valid = o_oracle > 1e-6
+                lv, diag = geom_depth_loss_l1(
+                    depth_hr[0, j, 0],
+                    pack,
+                    extra_mask=oracle_valid,
+                )
+                chunk_depth_loss = chunk_depth_loss + lv
+                diag_scales.append(diag["scale"].detach())
+
+            depth_loss_epoch += float(chunk_depth_loss.detach())
+
+            n_loss_v = normals.new_tensor(0.0)
+            if args.lambda_normal > 0:
+                n_loss_v = _laplacian_var(normals)
+            conf_v = (conf_hr - 0.5).pow(2).mean() * args.lambda_conf_entropy
+
+            n_loss_epoch += float(n_loss_v.detach()) * nb
+            conf_epoch += float(conf_v.detach()) * nb
+
+            reg_w = float(nb) / float(V)
+            loss_chunk = chunk_depth_loss / float(V) + (
+                args.lambda_normal * n_loss_v + conf_v
+            ) * reg_w
+
+            scaler.scale(loss_chunk).backward()
+
+        vcount = max(1, V)
+        depth_loss_accum = depth_loss_epoch / float(vcount)
         mean_scale = torch.stack(diag_scales).mean().item() if diag_scales else 0.0
+        n_loss_mean = n_loss_epoch / float(vcount)
+        conf_mean = conf_epoch / float(vcount)
 
-        n_loss = normals.new_tensor(0.0)
-        if args.lambda_normal > 0:
-            n_loss = _laplacian_var(normals)
-
-        conf_loss = (conf_hr - 0.5).pow(2).mean() * args.lambda_conf_entropy
-
-        loss = depth_loss_accum + args.lambda_normal * n_loss + conf_loss
-
-        scaler.scale(loss).backward()
         scaler.unscale_(opt)
         if args.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -268,8 +305,8 @@ def main():
         scaler.update()
 
         pbar.set_postfix(
-            Ld=float(depth_loss_accum.detach()),
-            Ln=float(n_loss.detach()) if args.lambda_normal > 0 else 0.0,
+            Ld=float(depth_loss_accum),
+            Ln=float(n_loss_mean) if args.lambda_normal > 0 else 0.0,
             sc=float(mean_scale),
         )
 
