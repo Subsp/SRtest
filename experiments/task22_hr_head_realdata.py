@@ -28,7 +28,10 @@ Otherwise pass ``--image_root`` explicitly.
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
+import statistics as py_stats
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -169,6 +172,83 @@ def _stack_views(frames_t: List[Dict[str, Any]], device: str) -> Tuple[torch.Ten
     return depth_b, rgb_b, None
 
 
+_DEPTH_METRIC_KEYS = ("abs_rel", "scale_inv_l1", "rmse")
+
+
+def _write_vggt_baseline_compare_artifacts(
+    out_dir: Path,
+    hr_rows: List[dict],
+    vggt_rows: List[dict],
+) -> Tuple[Optional[Path], Optional[Path]]:
+    """
+    逐帧对齐 HR Head vs VGGT(LR→HR 双线性) 的并排表 + JSON，便于上传脚本或 Sheets。
+    """
+    by_h = {str(r["frame"]): r for r in hr_rows}
+    merged: List[Dict[str, Any]] = []
+    for r in vggt_rows:
+        fn = str(r["frame"])
+        if fn not in by_h:
+            continue
+        h = by_h[fn]
+        row: Dict[str, Any] = {"frame": fn}
+        for k in _DEPTH_METRIC_KEYS:
+            hv, gv = float(h[k]), float(r[k])
+            row[f"hr_{k}"] = hv
+            row[f"vggt_bilinear_{k}"] = gv
+            row[f"delta_hr_minus_vggt_{k}"] = hv - gv
+        merged.append(row)
+
+    if not merged:
+        return None, None
+
+    csv_path = out_dir / "depth_metrics_hr_vs_vggt_baseline_sidebyside.csv"
+    keys = sorted(merged[0].keys())
+    with open(csv_path, "w", newline="", encoding="utf-8") as fp:
+        w = csv.DictWriter(fp, fieldnames=keys)
+        w.writeheader()
+        for r in merged:
+            w.writerow(r)
+
+    def _mean(vals: List[float]) -> float:
+        vv = [v for v in vals if not np.isnan(v)]
+        return py_stats.mean(vv) if vv else float("nan")
+
+    mh = {
+        k: _mean([float(r[f"hr_{k}"]) for r in merged])
+        for k in _DEPTH_METRIC_KEYS
+    }
+    mv = {
+        k: _mean([float(r[f"vggt_bilinear_{k}"]) for r in merged])
+        for k in _DEPTH_METRIC_KEYS
+    }
+    json_path = out_dir / "depth_metrics_compare_hr_vs_vggt_baseline.json"
+    payload = {
+        "protocol_note": (
+            "HR Head 与 VGGT baseline 共用同一 oracle 深度（双线性到 SR）、同一 mask(gt>ε)、"
+            "同一 compute_all_depth_metrics；VGGT baseline 为 LR depth 双线性上采样至 HR。"
+        ),
+        "n_frames_overlap": len(merged),
+        "sr_size": SR_SIZE,
+        "hr_head_mean_over_overlap": mh,
+        "vggt_lr_bilinear_mean_over_overlap": mv,
+        "delta_hr_minus_vggt_mean": {
+            k: mh[k] - mv[k]
+            for k in _DEPTH_METRIC_KEYS
+        },
+        "per_frame": merged,
+        "artifacts": {
+            "hr_vs_oracle_csv": str(out_dir / "depth_metrics_vs_oracle.csv"),
+            "vggt_baseline_vs_oracle_csv": str(
+                out_dir / "depth_metrics_vggt_upsampled_vs_oracle.csv"
+            ),
+            "sidebyside_csv": str(csv_path),
+        },
+    }
+    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    return csv_path, json_path
+
+
 def main():
     args = _parse_args()
     scene_root = str(Path(args.scene_root).expanduser().resolve())
@@ -266,10 +346,10 @@ def main():
 
     summary_hr: Optional[Tuple[float, float, int]] = None
     summary_vggt_bl: Optional[Tuple[float, float, int]] = None
+    hr_metric_rows: Optional[List[dict]] = None
+    vggt_metric_rows: Optional[List[dict]] = None
 
     if args.oracle_dir:
-        import csv
-
         import torch.nn.functional as F
 
         from task02_vggt_geometry import load_oracle_depth
@@ -309,6 +389,7 @@ def main():
             ar = stats.mean(float(r["abs_rel"]) for r in rows if not np.isnan(r["abs_rel"]))
             si = stats.mean(float(r["scale_inv_l1"]) for r in rows if not np.isnan(r["scale_inv_l1"]))
             summary_hr = (ar, si, len(rows))
+            hr_metric_rows = rows
             print(f"[oracle] HR Head vs oracle: mean AbsRel={ar:.4f}  ScaleInvL1={si:.4f} → {csv_path}")
         else:
             print("[oracle] no overlaps with oracle depth; check oracle_dir stems")
@@ -318,8 +399,6 @@ def main():
         and args.oracle_dir
         and vggt_vo_cache is not None
     ):
-        import csv
-
         import torch.nn.functional as F
 
         from task02_vggt_geometry import load_oracle_depth
@@ -368,6 +447,7 @@ def main():
             ar_b = stats.mean(float(r["abs_rel"]) for r in bros if not np.isnan(r["abs_rel"]))
             si_b = stats.mean(float(r["scale_inv_l1"]) for r in bros if not np.isnan(r["scale_inv_l1"]))
             summary_vggt_bl = (ar_b, si_b, len(bros))
+            vggt_metric_rows = bros
             print(
                 f"[baseline] VGGT LR depth → HR bilinear vs oracle (same protocol): "
                 f"mean AbsRel={ar_b:.4f}  ScaleInvL1={si_b:.4f} → {bp}"
@@ -379,6 +459,17 @@ def main():
             "[baseline][ERROR] --eval_vggt_upsampled_baseline 需要 VGGT 输出，"
             "但 vggt_vo_cache 为空（前端 VGGT 是否加载/跑失败）。不会生成 VGGT baseline CSV。"
         )
+
+    side_csv_path: Optional[Path] = None
+    side_json_path: Optional[Path] = None
+    if hr_metric_rows and vggt_metric_rows:
+        side_csv_path, side_json_path = _write_vggt_baseline_compare_artifacts(
+            out_dir, hr_metric_rows, vggt_metric_rows
+        )
+        if side_csv_path:
+            print(f"[compare] VGGT baseline 并排（逐帧）CSV: {side_csv_path}")
+        if side_json_path:
+            print(f"[compare] VGGT baseline 对比 JSON（便于上传/脚本读）: {side_json_path}")
 
     if summary_hr is not None and summary_vggt_bl is not None:
         ar_h, si_h, n_h = summary_hr
@@ -395,6 +486,15 @@ def main():
             f"  {c_hr}",
             f"  {c_bl}",
         ]
+        if side_csv_path and side_json_path:
+            lines.extend(
+                [
+                    "",
+                    "上传/自动化指标建议文件：",
+                    f"  {side_csv_path}",
+                    f"  {side_json_path}",
+                ]
+            )
         msg = "\n".join(lines)
         print("\n" + "=" * 72 + "\n" + msg + "\n" + "=" * 72)
         comp = out_dir / "compare_hrhead_vs_vggt_lr_bilinear.txt"

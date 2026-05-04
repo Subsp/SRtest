@@ -68,11 +68,16 @@ fi
 
 echo ""
 echo "==> 完成。查看（请直接复制下面路径）："
-echo "    ${OUT_ABS}/compare_hrhead_vs_vggt_lr_bilinear.txt   (并排：HR Head vs VGGT LR→HR 双线性)"
+echo "    ${OUT_ABS}/depth_metrics_hr_vs_vggt_baseline_sidebyside.csv  (逐帧 HR vs VGGT 双线性 Δ)"
+echo "    ${OUT_ABS}/depth_metrics_compare_hr_vs_vggt_baseline.json   (均值+逐帧，便于上传)"
+echo "    ${OUT_ABS}/compare_hrhead_vs_vggt_lr_bilinear.txt           (文字摘要)"
 echo "    ${OUT_ABS}/depth_metrics_vs_oracle.csv"
 echo "    ${OUT_ABS}/depth_metrics_vggt_upsampled_vs_oracle.csv"
 echo "    ${OUT_ABS}/*_depth_hr.npy"
 if [[ ! -f "${OUT_ABS}/depth_metrics_vs_oracle.csv" ]]; then
   echo "[WARN] CSV 未找到，可搜索最近一次输出："
   echo "    find ${SCRIPT_DIR}/results -name 'depth_metrics_vs_oracle.csv' -mmin -30 2>/dev/null | tail -5"
+fi
+if [[ ! -f "${OUT_ABS}/depth_metrics_compare_hr_vs_vggt_baseline.json" ]]; then
+  echo "[WARN] VGGT baseline 对比 JSON 未生成（无 oracle 交集、VGGT 失败或未与 HR 帧对齐）。"
 fi
