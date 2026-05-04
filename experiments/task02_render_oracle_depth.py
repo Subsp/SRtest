@@ -42,10 +42,18 @@ def parse_args():
 
 def main():
     args = parse_args()
-    out_dir = Path(args.output_dir)
+    out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── add mip-splatting to path ─────────────────────────────────────────────
+    # Resolve all relative paths BEFORE chdir
+    args.model_path  = str(Path(args.model_path).resolve())
+    args.source_path = str(Path(args.source_path).resolve())
+    args.mip_root    = str(Path(args.mip_root).resolve())
+
+    # ── isolate from experiments/utils/, switch to mip-splatting context ─────
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path = [p for p in sys.path if os.path.abspath(p) != script_dir]
+    os.chdir(args.mip_root)
     sys.path.insert(0, args.mip_root)
 
     # ── auto-detect iteration ─────────────────────────────────────────────────
