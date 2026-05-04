@@ -23,7 +23,10 @@ Usage:
       --data_root   /path/to/mipnerf360 \
       --oracle_root ./results/task02/oracle \
       --output_dir  ./results/task02 \
+      --vggt_root   /root/autodl-tmp/vggt \
       [--device cuda] [--seed 42]
+
+  # Or: export VGGT_ROOT=/root/autodl-tmp/vggt  (see experiments/configs.py)
 """
 
 import argparse

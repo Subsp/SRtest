@@ -3,6 +3,11 @@ Phase 0 experiment configuration.
 MipNeRF360 scenes, frame counts, resolution settings.
 """
 
+import os
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 # ── Task 0.1 & 0.2 scenes ────────────────────────────────────────────────────
 SCENES_PHASE0 = ["garden", "kitchen", "bonsai", "room", "counter"]
 
@@ -45,6 +50,9 @@ MIPNERF360_ROOT = "/path/to/mipnerf360"   # ← SET THIS
 # Output directory for experiment results
 OUTPUT_ROOT = "./results"
 
-# Paths to sibling repositories (relative to workspace root)
-VGGT_ROOT         = "../vggt"
-MIP_SPLATTING_ROOT = "../mip-splatting"
+# VGGT: clone root must contain importable package `vggt/` (facebook/VGGT).
+# On servers, the repo is often outside SRtest — set once:
+#   export VGGT_ROOT=/root/autodl-tmp/vggt
+# or pass  --vggt_root /root/autodl-tmp/vggt  to task02_vggt_geometry.py
+VGGT_ROOT = os.environ.get("VGGT_ROOT", str(_REPO_ROOT / "vggt"))
+MIP_SPLATTING_ROOT = str(_REPO_ROOT / "mip-splatting")

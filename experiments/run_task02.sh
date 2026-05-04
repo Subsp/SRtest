@@ -42,12 +42,18 @@ fi
 # ── Step 2: VGGT inference + comparison ──────────────────────────────────────
 echo ""
 echo "[Step 2/2] Running VGGT inference and depth comparison …"
+# Optional: export VGGT_ROOT=/root/autodl-tmp/vggt  when VGGT is not under SRtest/vggt
+TASK02_EXTRA=()
+if [[ -n "${VGGT_ROOT:-}" ]]; then
+  TASK02_EXTRA+=(--vggt_root "${VGGT_ROOT}")
+fi
 python "${SCRIPT_DIR}/task02_vggt_geometry.py" \
     --data_root   "${DATA_ROOT}" \
     --oracle_root "${ORACLE_ROOT}" \
     --output_dir  "${OUTPUT_DIR}" \
     --device      "${DEVICE}" \
-    --n_frames    8
+    --n_frames    8 \
+    "${TASK02_EXTRA[@]}"
 
 echo ""
 echo "Done. Results in ${OUTPUT_DIR}"
