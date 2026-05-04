@@ -22,6 +22,8 @@ cd "${SCRIPT_DIR}"
 : "${DEVICE:=cuda}"
 : "${N_FRAMES:=8}"
 : "${DEPTH_SOURCE:=colmap}"
+# unet | hd_vggt_style（LR ViT + 引导式 HR，与 HD-VGGT 论文结构对齐；需配套 ckpt）
+: "${HEAD_VARIANT:=unet}"
 
 TS="$(date +%Y%m%d_%H%M)"
 if [[ -z "${OUT_DIR:-}" ]]; then
@@ -46,6 +48,7 @@ python -u task22_hr_head_realdata.py \
   --auto_images \
   --priors_dir "${PRIORS_DIR}" \
   --depth_source "${DEPTH_SOURCE}" \
+  --head_variant "${HEAD_VARIANT}" \
   --ckpt "${HR_HEAD_CKPT}" \
   --oracle_dir "${ORACLE_DIR}" \
   --eval_vggt_upsampled_baseline \

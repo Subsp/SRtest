@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from configs import LR_SIZE, SR_SIZE, VGGT_ROOT
 from models.hr_head import HRGeometricPriorHead
+from models.hr_head_hd_vggt_style import HDVGGTStyleGeomHead
 from utils.dataset import frames_to_tensors, load_scene_frames, pick_image_subdir
 
 
@@ -112,6 +113,12 @@ def _parse_args():
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--output_dir", default="./results/task22_realdata")
     p.add_argument("--base_channels", type=int, default=96)
+    p.add_argument(
+        "--head_variant",
+        choices=("unet", "hd_vggt_style"),
+        default="unet",
+        help="unet=原卷积 U-Net；hd_vggt_style=LR ViT + HD-VGGT 式引导上采样(HR) + 卷积 refiner（非官方权重）。",
+    )
     p.add_argument("--force_no_sr_prior", action="store_true")
     p.add_argument(
         "--ckpt",
@@ -214,11 +221,15 @@ def main():
     use_sr = sr_b is not None and not args.force_no_sr_prior
     sr_scale = max(1, int(round(SR_SIZE / float(args.target_lr_size))))
 
-    model = HRGeometricPriorHead(
-        use_rgb=True,
-        use_sr_prior=use_sr,
-        base_channels=args.base_channels,
-        sr_scale=sr_scale,
+    model = (
+        HDVGGTStyleGeomHead(use_rgb=True, use_sr_prior=use_sr, sr_scale=sr_scale)
+        if args.head_variant == "hd_vggt_style"
+        else HRGeometricPriorHead(
+            use_rgb=True,
+            use_sr_prior=use_sr,
+            base_channels=args.base_channels,
+            sr_scale=sr_scale,
+        )
     ).to(args.device)
 
     if args.ckpt:

@@ -7,7 +7,8 @@ Phase 2.3 — HR Head 训练（oracle GS 蒸馏深度，v0）
   resize 至 ``SR_SIZE`` 后与预测 ``depth_hr`` 对齐，使用 ``geom_prior.geom_depth_loss_l1``
   （median-scale + 置信度可选）。
 
-不含：法向监督、分布式、完整数据管线扩展（后续可加）。
+内含显存策略：默认 ``--views_per_forward 1``，LR/oracle 常驻 CPU，每步只把当前视角块拷到 GPU，
+避免旧版把 V 路 800×800 U-Net 一次性拼到同一张卡上（A100 也会 OOM）。
 
 示例：
   cd experiments && python train_hr_head.py \\
@@ -40,6 +41,7 @@ import task22_hr_head_realdata as pathcfg
 from configs import LR_SIZE, SR_SIZE, VGGT_ROOT
 from geom_prior import PriorPackDepth, geom_depth_loss_l1
 from models.hr_head import HRGeometricPriorHead
+from models.hr_head_hd_vggt_style import HDVGGTStyleGeomHead
 from task02_vggt_geometry import load_oracle_depth, run_vggt_on_frames, _setup_vggt
 from utils.dataset import frames_to_tensors, load_scene_frames
 
@@ -113,6 +115,13 @@ def _parse_args():
     p.add_argument("--weight_decay", type=float, default=1e-2)
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--base_channels", type=int, default=96)
+
+    p.add_argument(
+        "--head_variant",
+        choices=("unet", "hd_vggt_style"),
+        default="unet",
+        help="hd_vggt_style: LR ViT + guidance HR branch (HD-VGGT §3.2 style), 需重新训练；ckpt 与 unet 不通用。",
+    )
 
     p.add_argument("--lambda_normal", type=float, default=0.05,
                    help="Encourage normals to vary smoothly (L2 on Laplacian, cheap prior).")
@@ -214,11 +223,15 @@ def main():
     if vp > 1:
         print(f"[mem] views_per_forward={vp} — reduce to 1 if you still hit OOM.")
 
-    model = HRGeometricPriorHead(
-        use_rgb=True,
-        use_sr_prior=use_sr,
-        base_channels=args.base_channels,
-        sr_scale=sr_scale,
+    model = (
+        HDVGGTStyleGeomHead(use_rgb=True, use_sr_prior=use_sr, sr_scale=sr_scale)
+        if args.head_variant == "hd_vggt_style"
+        else HRGeometricPriorHead(
+            use_rgb=True,
+            use_sr_prior=use_sr,
+            base_channels=args.base_channels,
+            sr_scale=sr_scale,
+        )
     ).to(args.device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 

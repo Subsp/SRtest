@@ -15,24 +15,39 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent))
 from configs import LR_SIZE, SR_SIZE, SR_SCALE
 from models.hr_head import HRGeometricPriorHead, count_parameters
+from models.hr_head_hd_vggt_style import HDVGGTStyleGeomHead
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--head_variant",
+        choices=("unet", "hd_vggt_style"),
+        default="unet",
+    )
     args = p.parse_args()
     dev = args.device
 
     B, V = 1, 4
     H, W = LR_SIZE, LR_SIZE
-    model = HRGeometricPriorHead(
-        use_rgb=True,
-        use_sr_prior=True,
-        base_channels=96,
-        sr_scale=SR_SCALE,
-    ).to(dev)
+    if args.head_variant == "hd_vggt_style":
+        model = HDVGGTStyleGeomHead(
+            use_rgb=True,
+            use_sr_prior=True,
+            sr_scale=SR_SCALE,
+        ).to(dev)
+        name = "HDVGGTStyleGeomHead"
+    else:
+        model = HRGeometricPriorHead(
+            use_rgb=True,
+            use_sr_prior=True,
+            base_channels=96,
+            sr_scale=SR_SCALE,
+        ).to(dev)
+        name = "HRGeometricPriorHead"
     n_params = count_parameters(model)
-    print(f"HRGeometricPriorHead trainable params: {n_params / 1e6:.2f}M")
+    print(f"{name} trainable params: {n_params / 1e6:.2f}M")
 
     depth_lr = torch.rand(B, V, 1, H, W, device=dev) * 5.0 + 0.5
     rgb_lr = torch.rand(B, V, 3, H, W, device=dev)

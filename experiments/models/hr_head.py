@@ -23,6 +23,59 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def compose_geom_lr_stack(
+    depth_lr: torch.Tensor,
+    rgb_lr: Optional[torch.Tensor],
+    sr_prior_hr: Optional[torch.Tensor],
+    *,
+    use_rgb: bool,
+    use_sr_prior: bool,
+    depth_in_log_space: bool,
+    sr_scale: int,
+) -> torch.Tensor:
+    """
+    Shared LR conditioning (log-depth + optional RGB @ LR + SR prior down to LR).
+
+    depth_lr:   (B, V, 1, H, W); rgb_lr/sr_prior_hr optional per flags.
+    Returns (B, V, C, H, W).
+    """
+    if depth_lr.dim() != 5:
+        raise ValueError(f"depth_lr must be 5D, got shape {tuple(depth_lr.shape)}")
+    b, v, _, h, w = depth_lr.shape
+    eps = 1e-6
+    d = depth_lr
+    if depth_in_log_space:
+        d = torch.log(d.clamp_min(eps))
+
+    parts = [d]
+
+    if use_rgb:
+        if rgb_lr is None:
+            raise ValueError("use_rgb=True but rgb_lr is None")
+        parts.append(rgb_lr)
+
+    if use_sr_prior:
+        if sr_prior_hr is None:
+            raise ValueError("use_sr_prior=True but sr_prior_hr is None")
+        if sr_prior_hr.shape[-2:] != (h * sr_scale, w * sr_scale):
+            sr_prior_hr = F.interpolate(
+                sr_prior_hr.flatten(0, 1),
+                size=(h * sr_scale, w * sr_scale),
+                mode="bilinear",
+                align_corners=False,
+            ).unflatten(0, (b, v))
+        sr_lr = F.interpolate(
+            sr_prior_hr.flatten(0, 1),
+            size=(h, w),
+            mode="bilinear",
+            align_corners=False,
+        ).unflatten(0, (b, v))
+        parts.append(sr_lr)
+
+    x = torch.cat(parts, dim=2)
+    return x.contiguous()
+
+
 def _make_norm(num_channels: int) -> nn.Module:
     """GroupNorm with num_groups dividing num_channels (required by PyTorch)."""
     if num_channels <= 0:
@@ -133,41 +186,15 @@ class HRGeometricPriorHead(nn.Module):
         sr_prior_hr: (B,V,3,sH,sW) StableSR RGB at HR — downsampled internally
         Returns (B,V,C,H,W).
         """
-        if depth_lr.dim() != 5:
-            raise ValueError(f"depth_lr must be 5D, got shape {tuple(depth_lr.shape)}")
-        b, v, _, h, w = depth_lr.shape
-        eps = 1e-6
-        d = depth_lr
-        if self.depth_in_log_space:
-            d = torch.log(d.clamp_min(eps))
-
-        parts = [d]
-
-        if self.use_rgb:
-            if rgb_lr is None:
-                raise ValueError("use_rgb=True but rgb_lr is None")
-            parts.append(rgb_lr)
-
-        if self.use_sr_prior:
-            if sr_prior_hr is None:
-                raise ValueError("use_sr_prior=True but sr_prior_hr is None")
-            if sr_prior_hr.shape[-2:] != (h * self.sr_scale, w * self.sr_scale):
-                sr_prior_hr = F.interpolate(
-                    sr_prior_hr.flatten(0, 1),
-                    size=(h * self.sr_scale, w * self.sr_scale),
-                    mode="bilinear",
-                    align_corners=False,
-                ).unflatten(0, (b, v))
-            sr_lr = F.interpolate(
-                sr_prior_hr.flatten(0, 1),
-                size=(h, w),
-                mode="bilinear",
-                align_corners=False,
-            ).unflatten(0, (b, v))
-            parts.append(sr_lr)
-
-        x = torch.cat(parts, dim=2)
-        return x.contiguous()
+        return compose_geom_lr_stack(
+            depth_lr,
+            rgb_lr,
+            sr_prior_hr,
+            use_rgb=self.use_rgb,
+            use_sr_prior=self.use_sr_prior,
+            depth_in_log_space=self.depth_in_log_space,
+            sr_scale=self.sr_scale,
+        )
 
     def forward_tensors(
         self,

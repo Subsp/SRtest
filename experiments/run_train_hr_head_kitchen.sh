@@ -21,6 +21,7 @@ cd "$(dirname "$0")"
 : "${N_FRAMES:=32}"
 : "${VIEWS_PER_FORWARD:=1}"
 : "${DEPTH_SOURCE:=colmap}"
+: "${HEAD_VARIANT:=unet}"
 
 mkdir -p "${CKPT_DIR}"
 
@@ -36,6 +37,7 @@ python train_hr_head.py \
   --n_frames "${N_FRAMES}" \
   --views_per_forward "${VIEWS_PER_FORWARD}" \
   --depth_source "${DEPTH_SOURCE}" \
+  --head_variant "${HEAD_VARIANT}" \
   --device "${DEVICE}"
 
 echo "==> last: ${CKPT_DIR}/hr_head_last.pt"
