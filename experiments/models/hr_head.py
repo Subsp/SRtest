@@ -191,27 +191,28 @@ class HRGeometricPriorHead(nn.Module):
 
         y = x3
 
-        def _crop_to(h_ref: torch.Tensor, y_: torch.Tensor) -> torch.Tensor:
-            th, tw = h_ref.shape[2:]
-            uh, uw = y_.shape[2], y_.shape[3]
+        # Align decoder feature `t` to skip `ref` spatially; skip keeps its own channels.
+        def _align_spatial(t: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+            th, tw = ref.shape[2], ref.shape[3]
+            uh, uw = t.shape[2], t.shape[3]
             if (uh, uw) == (th, tw):
-                return y_
+                return t
             if uh >= th and uw >= tw:
-                return y_[..., :th, :tw]
-            return F.interpolate(y_, size=(th, tw), mode="bilinear", align_corners=False)
+                return t[..., :th, :tw]
+            return F.interpolate(t, size=(th, tw), mode="bilinear", align_corners=False)
 
         y = F.interpolate(y, scale_factor=2.0, mode="bilinear", align_corners=False)
-        y = torch.cat([_crop_to(x2, y), y], dim=1)
+        y = torch.cat([x2, _align_spatial(y, x2)], dim=1)
         y = self.up1(y)
         y = self.dec1(y)
 
         y = F.interpolate(y, scale_factor=2.0, mode="bilinear", align_corners=False)
-        y = torch.cat([_crop_to(x1, y), y], dim=1)
+        y = torch.cat([x1, _align_spatial(y, x1)], dim=1)
         y = self.up2(y)
         y = self.dec2(y)
 
         y = F.interpolate(y, scale_factor=2.0, mode="bilinear", align_corners=False)
-        y = torch.cat([_crop_to(x0, y), y], dim=1)
+        y = torch.cat([x0, _align_spatial(y, x0)], dim=1)
         y = self.up3(y)
         y = self.dec3(y)
 
