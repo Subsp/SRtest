@@ -2,7 +2,9 @@
 Phase 2.2 – HR Geometric Prior Head (dual output heads, shared backbone).
 
 Consumes LR-resolution conditioning (VGGT depth + optional LR RGB +
-optional StableSR prior downsampled to LR). Produces HR maps aligned to
+optional StableSR prior downsampled to LR *and*, when ``use_sr_prior``,
+optional **HR-resolution** StableSR fused after the decoder upsample).
+
 oracle / MipNeRF SR resolution (default 800×800 for 200→4×).
 
 Inference contract (per batch of views):
@@ -109,7 +111,9 @@ class HRGeometricPriorHead(nn.Module):
     Typical inputs (stacked along channel dim at LR spatial size):
       - depth_lr:  VGGT disparity/depth resized to LR (1 ch), log-space optional
       - rgb_lr:    LR RGB in [0,1] if use_rgb
-      - sr_prior_lr: StableSR RGB downsampled to LR if use_sr_prior
+      - sr_prior_lr: StableSR RGB downsampled to LR if use_sr_prior (compose)
+      - sr_prior_hr: same StableSR at HR — **additionally** encoded and fused at HR after bilinear upsample
+        (not only the low-pass LR copy).
     """
 
     def __init__(
@@ -149,6 +153,17 @@ class HRGeometricPriorHead(nn.Module):
 
         self.up3 = nn.Conv2d(b * 2 + b, b, 1, bias=False)
         self.dec3 = DoubleConv(b, b)
+
+        if use_sr_prior:
+            self.sr_hr_encoder = DoubleConv(3, b)
+            self.sr_hr_fuse = nn.Sequential(
+                nn.Conv2d(b + b, b, 1, bias=False),
+                _make_norm(b),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.sr_hr_encoder = None  # type: ignore[assignment]
+            self.sr_hr_fuse = None  # type: ignore[assignment]
 
         hr_mid = max(32, b // 2)
         self.refine = nn.Sequential(
@@ -200,10 +215,12 @@ class HRGeometricPriorHead(nn.Module):
         self,
         lr_stack: torch.Tensor,
         *,
+        sr_hr: Optional[torch.Tensor] = None,
         _lr_hw: Tuple[int, int],
     ) -> Dict[str, torch.Tensor]:
         """
         lr_stack: (B*V, C, H_lr, W_lr)
+        sr_hr:    (B*V, 3, H_sr, W_sr) optional StableSR RGB at **target HR**; fused after upsample.
         _lr_hw:   reserved for future validation / profiling hooks.
         Returns dict depth_hr, normal_hr, confidence with leading (B,V,...) restored by caller.
         """
@@ -244,6 +261,11 @@ class HRGeometricPriorHead(nn.Module):
         y = self.dec3(y)
 
         y = F.interpolate(y, size=(h_sr, w_sr), mode="bilinear", align_corners=False)
+        if self.use_sr_prior and sr_hr is not None and self.sr_hr_encoder is not None:
+            if sr_hr.shape[-2:] != (h_sr, w_sr):
+                sr_hr = F.interpolate(sr_hr, size=(h_sr, w_sr), mode="bilinear", align_corners=False)
+            sf = self.sr_hr_encoder(sr_hr)
+            y = self.sr_hr_fuse(torch.cat([y, sf], dim=1))
         y = self.refine(y)
 
         depth = F.softplus(self.head_depth(y)) + 1e-3
@@ -282,7 +304,11 @@ class HRGeometricPriorHead(nn.Module):
         bv = b * v
         x_in = lr_stack.reshape(bv, lr_stack.shape[2], h_lr, w_lr)
 
-        out = self.forward_tensors(x_in, _lr_hw=(h_lr, w_lr))
+        sr_hv: Optional[torch.Tensor] = None
+        if self.use_sr_prior and sr_prior_hr is not None:
+            sr_hv = sr_prior_hr.reshape(bv, 3, sr_prior_hr.shape[-2], sr_prior_hr.shape[-1])
+
+        out = self.forward_tensors(x_in, sr_hr=sr_hv, _lr_hw=(h_lr, w_lr))
         pooled: Dict[str, torch.Tensor] = {}
         for k, t in out.items():
             _, c, hh, ww = t.shape
