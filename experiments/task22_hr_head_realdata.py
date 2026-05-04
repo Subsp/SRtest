@@ -20,7 +20,7 @@ Example (your layout):
     --output_dir ./results/task22_kitchen_mipsplat_lr \\
     --device cuda
 
-``--image_root`` is inferred from ``--sparse_dir`` when it looks like ``…/kitchen``
+可加 ``--eval_vggt_upsampled_baseline``（需 ``--oracle_dir``）：与同 oracle 度量 **VGGT LR 深度双线性上采样到 HR**，与 HR Head 输出对齐可比。
 with ``sparse/0/cameras.bin``, or equals ``kitchen`` when ``sparse_dir`` is ``kitchen/sparse/0``.
 Otherwise pass ``--image_root`` explicitly.
 """
@@ -253,6 +253,9 @@ def main():
     print(f"[ok] Saved {v} views under {out_dir}")
     print(f"     depth_hr shape: {tuple(out['depth_hr'].shape)}")
 
+    summary_hr: Optional[Tuple[float, float, int]] = None
+    summary_vggt_bl: Optional[Tuple[float, float, int]] = None
+
     if args.oracle_dir:
         import csv
 
@@ -294,7 +297,8 @@ def main():
 
             ar = stats.mean(float(r["abs_rel"]) for r in rows if not np.isnan(r["abs_rel"]))
             si = stats.mean(float(r["scale_inv_l1"]) for r in rows if not np.isnan(r["scale_inv_l1"]))
-            print(f"[oracle] mean AbsRel={ar:.4f}  ScaleInvL1={si:.4f} → {csv_path}")
+            summary_hr = (ar, si, len(rows))
+            print(f"[oracle] HR Head vs oracle: mean AbsRel={ar:.4f}  ScaleInvL1={si:.4f} → {csv_path}")
         else:
             print("[oracle] no overlaps with oracle depth; check oracle_dir stems")
 
@@ -352,10 +356,50 @@ def main():
                     w.writerow(r)
             ar_b = stats.mean(float(r["abs_rel"]) for r in bros if not np.isnan(r["abs_rel"]))
             si_b = stats.mean(float(r["scale_inv_l1"]) for r in bros if not np.isnan(r["scale_inv_l1"]))
+            summary_vggt_bl = (ar_b, si_b, len(bros))
             print(
-                f"[baseline] VGGT depth → HR bilinear vs oracle (same protocol as HR Head): "
+                f"[baseline] VGGT LR depth → HR bilinear vs oracle (same protocol): "
                 f"mean AbsRel={ar_b:.4f}  ScaleInvL1={si_b:.4f} → {bp}"
             )
         else:
-            print("[baseline] no VGGT-vs-oracle rows (oracle missing?).")
+            print("[baseline] no VGGT-vs-oracle rows (oracle depth missing for sampled frames?).")
+    elif args.eval_vggt_upsampled_baseline and args.oracle_dir:
+        print(
+            "[baseline][ERROR] --eval_vggt_upsampled_baseline 需要 VGGT 输出，"
+            "但 vggt_vo_cache 为空（前端 VGGT 是否加载/跑失败）。不会生成 VGGT baseline CSV。"
+        )
+
+    if summary_hr is not None and summary_vggt_bl is not None:
+        ar_h, si_h, n_h = summary_hr
+        ar_v, si_v, n_v = summary_vggt_bl
+        c_hr = out_dir / "depth_metrics_vs_oracle.csv"
+        c_bl = out_dir / "depth_metrics_vggt_upsampled_vs_oracle.csv"
+        lines = [
+            "HR Head vs VGGT（LR 深度双线性上采样到 HR）— 与同一 oracle、同一评测协议",
+            f"  HR Head:               mean AbsRel={ar_h:.4f}  ScaleInvL1={si_h:.4f}  (n={n_h} frames)",
+            f"  VGGT LR→HR bilinear:  mean AbsRel={ar_v:.4f}  ScaleInvL1={si_v:.4f}  (n={n_v} frames)",
+            f"  Δ (HR − VGGT baseline): ΔAbsRel={ar_h - ar_v:+.4f}  ΔScaleInvL1={si_h - si_v:+.4f}",
+            "    （AbsRel / Scale-inv L1：数值越小越好；Δ 为负表示 HR Head 优于双线性 VGGT）",
+            "",
+            f"  {c_hr}",
+            f"  {c_bl}",
+        ]
+        msg = "\n".join(lines)
+        print("\n" + "=" * 72 + "\n" + msg + "\n" + "=" * 72)
+        comp = out_dir / "compare_hrhead_vs_vggt_lr_bilinear.txt"
+        comp.write_text(msg + "\n", encoding="utf-8")
+        print(f"[compare] 并排对比摘要: {comp}")
+    elif (
+        summary_hr is not None
+        and args.eval_vggt_upsampled_baseline
+        and summary_vggt_bl is None
+        and vggt_vo_cache is not None
+    ):
+        print(
+            "[compare][WARN] VGGT 已跑通但 baseline 无有效行（与 oracle 无重叠帧？）。"
+            " 不会生成 compare 摘要；请查 depth_metrics_vggt_upsampled_vs_oracle.csv 是否为空。"
+        )
+
+
+if __name__ == "__main__":
     main()
