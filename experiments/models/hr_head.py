@@ -24,7 +24,13 @@ import torch.nn.functional as F
 
 
 def _make_norm(num_channels: int) -> nn.Module:
-    return nn.GroupNorm(min(32, num_channels), num_channels)
+    """GroupNorm with num_groups dividing num_channels (required by PyTorch)."""
+    if num_channels <= 0:
+        raise ValueError(f"num_channels must be positive, got {num_channels}")
+    g = min(32, num_channels)
+    while num_channels % g != 0:
+        g -= 1
+    return nn.GroupNorm(g, num_channels)
 
 
 class DoubleConv(nn.Module):
