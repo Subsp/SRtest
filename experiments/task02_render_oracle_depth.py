@@ -123,33 +123,55 @@ def main():
 
     pipe = pipe_params.extract(fake_args)
 
-    # ── auto-detect render() signature ────────────────────────────────────────
+    # ── compute 3D filter (mip-splatting specific) ────────────────────────────
+    if hasattr(gaussians, "compute_3D_filter"):
+        print("[oracle] Computing 3D filter …")
+        gaussians.compute_3D_filter(train_cams.copy())
+
+    # ── try to construct splat_args (ExtendedSettings) ────────────────────────
+    splat_args = None
+    try:
+        from diff_gaussian_rasterization import ExtendedSettings
+        splat_args = ExtendedSettings.from_defaults() if hasattr(ExtendedSettings, "from_defaults") else ExtendedSettings()
+        print(f"[oracle] splat_args constructed: {type(splat_args).__name__}")
+    except Exception as e:
+        print(f"[oracle] [WARN] cannot build ExtendedSettings: {e}")
+
+    # ── prepare render kwargs by introspection ────────────────────────────────
     import inspect
     render_sig = inspect.signature(render)
-    render_kwargs = {}
+    base_kwargs = {}
     if "kernel_size" in render_sig.parameters:
-        render_kwargs["kernel_size"] = kernel_size
-    if "scale_factor" in render_sig.parameters:
-        render_kwargs["scale_factor"] = 1.0
-    if "return_aux" in render_sig.parameters:
-        render_kwargs["return_aux"] = True
-    print(f"[oracle] render() kwargs: {list(render_kwargs.keys())}")
+        base_kwargs["kernel_size"] = kernel_size
+    if "splat_args" in render_sig.parameters and splat_args is not None:
+        base_kwargs["splat_args"] = splat_args
+    print(f"[oracle] render() kwargs: {list(base_kwargs.keys())}")
 
+    # ── DEPTH-AS-COLOR TRICK ──────────────────────────────────────────────────
+    # Render with override_color = depth value of each gaussian in camera space.
+    # The resulting "RGB" image is then the depth map.
     n_saved = 0
+    xyz_world = gaussians.get_xyz                      # (N, 3)
+
     for cam in tqdm(train_cams, desc="Render depth"):
         with torch.no_grad():
-            out = render(cam, gaussians, pipe, background, **render_kwargs)
-        # depth lives in 'depth' key for merged renderer; fall back to 'render_full'
-        depth = out.get("depth", None)
-        if depth is None:
-            full = out.get("render_full", None)
-            if full is not None and full.shape[0] >= 7:
-                depth = full[6:7]
-            else:
-                continue
-        depth_np = depth.detach().squeeze().cpu().numpy().astype(np.float32)
+            # Compute per-gaussian depth in this camera's frame
+            # world_view_transform: (4,4) world→camera; depth = z after transform
+            wvt   = cam.world_view_transform            # (4,4) row-major
+            xyz_h = torch.cat([xyz_world, torch.ones_like(xyz_world[:, :1])], dim=1)  # (N,4)
+            xyz_cam = xyz_h @ wvt                        # (N,4)
+            depth_per_gauss = xyz_cam[:, 2:3]            # (N,1)
+            override_color  = depth_per_gauss.repeat(1, 3)   # (N,3) – broadcast as RGB
 
-        # Use cam.image_name as filename (matches MipNeRF360 frame stem)
+            out = render(
+                cam, gaussians, pipe, background,
+                override_color=override_color,
+                **base_kwargs,
+            )
+        rendered = out["render"]                         # (3, H, W) – all 3 channels = depth
+        depth    = rendered[0]                           # take any channel
+        depth_np = depth.detach().cpu().numpy().astype(np.float32)
+
         save_path = out_dir / f"{cam.image_name}.npy"
         np.save(str(save_path), depth_np)
         n_saved += 1
