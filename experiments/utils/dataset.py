@@ -40,6 +40,18 @@ def find_prior_sr_path(scene_root: str, prior_subdir: str, frame_stem: str) -> O
     return None
 
 
+def find_prior_sr_in_dir(priors_dir: str, frame_stem: str) -> Optional[Path]:
+    """Like find_prior_sr_path but ``priors_dir`` is the absolute folder of cache images."""
+    root = Path(priors_dir).expanduser().resolve()
+    if not root.is_dir():
+        return None
+    for ext in _PRIOR_EXTENSIONS:
+        cand = root / f"{frame_stem}{ext}"
+        if cand.is_file():
+            return cand
+    return None
+
+
 def _find_sparse_dir(scene_root: str) -> str:
     """Return path to sparse/0 or sparse directory."""
     for candidate in ["sparse/0", "sparse"]:
@@ -49,10 +61,61 @@ def _find_sparse_dir(scene_root: str) -> str:
     raise FileNotFoundError(f"Cannot find COLMAP sparse dir under {scene_root}")
 
 
+def resolve_colmap_sparse_root(
+    scene_root: str,
+    sparse_dir: Optional[str] = None,
+) -> str:
+    """
+    Path to directory containing ``cameras.bin`` (and ``images.bin``, ``points3D.bin``).
+
+    - If ``sparse_dir`` is None: same as ``_find_sparse_dir(scene_root)``.
+    - Else: accept an absolute path either to ``.../sparse/0`` or to the scene root that
+      contains ``sparse/0`` or ``sparse``.
+    """
+    if not sparse_dir:
+        return _find_sparse_dir(scene_root)
+    p = Path(sparse_dir).expanduser().resolve()
+    if (p / "cameras.bin").is_file():
+        return str(p)
+    for sub in ("sparse/0", "sparse"):
+        d = p / sub
+        if (d / "cameras.bin").is_file():
+            return str(d)
+    raise FileNotFoundError(
+        f"Cannot find cameras.bin under sparse_dir={sparse_dir} "
+        f"(tried direct, sparse/0, sparse)."
+    )
+
+
+def pick_image_subdir(scene_root: str, preferred: Optional[str] = None) -> str:
+    """
+    Pick a subdirectory under ``scene_root`` that contains PNG/JPEG frames.
+    If ``preferred`` is set, use it (must exist).
+    """
+    root = Path(scene_root).expanduser().resolve()
+    if preferred:
+        d = root / preferred
+        if not d.is_dir():
+            raise FileNotFoundError(f"image_subdir not found: {d}")
+        return preferred
+    for name in ("images_8", "images", "images_2", "input", "rgb", "images_lr", "lr"):
+        d = root / name
+        if not d.is_dir():
+            continue
+        for pat in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"):
+            if next(d.glob(pat), None) is not None:
+                return name
+    raise FileNotFoundError(
+        f"No folder with PNG/JPEG under {scene_root}. Pass --image_subdir."
+    )
+
+
 def load_scene_frames(
     scene_root: str,
     image_subdir: str = "images_8",
     prior_subdir: Optional[str] = None,
+    prior_dir: Optional[str] = None,
+    sparse_dir: Optional[str] = None,
     n_frames: int = 8,
     target_lr_size: int = 200,
     seed: int = 42,
@@ -60,8 +123,12 @@ def load_scene_frames(
     """
     Load n_frames training frames from a MipNeRF360 scene.
 
-    If prior_subdir is set (e.g. ``priors``), expects HR RGB cache parallel to
-    image_subdir: ``scene_root/<prior_subdir>/<stem>.png`` resized to SR size.
+    If prior_dir is set, loads ``<prior_dir>/<stem>.png`` (HR prior), resized to SR size.
+
+    If prior_subdir is set **and** prior_dir is None: ``scene_root/<prior_subdir>/…``.
+
+    If sparse_dir is set, COLMAP binaries are resolved via ``resolve_colmap_sparse_root``;
+    otherwise they are looked up under scene_root/sparse/.
 
     Returns a list of dicts, each containing:
         name        : image filename stem
@@ -74,10 +141,10 @@ def load_scene_frames(
         depth_lr    : np.float32 (target_lr_size, target_lr_size) sparse-interp depth
         orig_wh     : (W, H) original image resolution
     """
-    sparse_dir = _find_sparse_dir(scene_root)
-    cameras   = read_cameras_binary(os.path.join(sparse_dir, "cameras.bin"))
-    images    = read_images_binary(os.path.join(sparse_dir, "images.bin"))
-    points3D  = read_points3D_binary_with_ids(os.path.join(sparse_dir, "points3D.bin"))
+    sparse_root = resolve_colmap_sparse_root(scene_root, sparse_dir)
+    cameras   = read_cameras_binary(os.path.join(sparse_root, "cameras.bin"))
+    images    = read_images_binary(os.path.join(sparse_root, "images.bin"))
+    points3D  = read_points3D_binary_with_ids(os.path.join(sparse_root, "points3D.bin"))
 
     # Build filename → colmap_image map for the LR images that exist on disk
     lr_dir = os.path.join(scene_root, image_subdir)
@@ -145,12 +212,16 @@ def load_scene_frames(
             depth_lr = depth_lr,
             orig_wh  = orig_wh,
         )
-        if prior_subdir:
+        if prior_dir:
+            pp = find_prior_sr_in_dir(prior_dir, stem)
+        elif prior_subdir:
             pp = find_prior_sr_path(scene_root, prior_subdir, stem)
-            if pp is not None:
-                pil_pr = PILImage.open(pp).convert("RGB")
-                pil_pr = pil_pr.resize(sr_wh, PILImage.BICUBIC)
-                entry["prior_sr_hr"] = np.array(pil_pr, dtype=np.uint8)
+        else:
+            pp = None
+        if pp is not None:
+            pil_pr = PILImage.open(pp).convert("RGB")
+            pil_pr = pil_pr.resize(sr_wh, PILImage.BICUBIC)
+            entry["prior_sr_hr"] = np.array(pil_pr, dtype=np.uint8)
 
         frames.append(entry)
 
