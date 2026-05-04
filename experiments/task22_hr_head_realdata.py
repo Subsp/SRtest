@@ -1,29 +1,34 @@
 """
-HR Head forward on disk data (kitchen / SOFSR LR mip-splatting scene).
+HR Head forward on real LR RGB + COLMAP (+ optional VGGT depth + StableSR priors).
 
-Loads LR RGB + COLMAP sparse depth (+ optional VGGT depth) + optional StableSR HR
-priors from a separate folder, runs ``HRGeometricPriorHead``, saves ``.npy`` maps.
+**Important:** mip-splatting ``output/…/experiment_name`` is **training output**
+(checkpoints etc.), normally **without** JPEG training views. LR images and
+matching ``sparse/`` still live under the **source scene** (e.g. ``…/kitchen``).
 
-Typical layout:
-  scene_root/images/ …  (``images_8`` / ``images`` / … — auto-detected or ``--image_subdir``)
-  scene_root/sparse/0/*.bin
+This script separates:
+  * ``scene_root``: can be mip-splat output **or** ignored for images when you set paths below
+  * ``sparse_dir``: COLMAP tree (often ``…/kitchen``)
+  * ``image_root``: folder that contains ``images`` / ``images_8`` / … (often **same as sparse_dir parent** → auto-derived from ``sparse_dir`` when possible)
 
-Example (autodl):
-  cd experiments && python task22_hr_head_realdata.py \\
-    --scene_root /root/autodl-tmp/SOFSR/output/kitchen_mipsplatting_lr_ablation_v1/mipsplatting_x8to2_baseline_directsrc_v1 \\
-    --priors_dir /root/autodl-tmp/kitchen/priors \\
+Example (your layout):
+  python task22_hr_head_realdata.py \\
+    --scene_root /root/autodl-tmp/SOFSR/output/.../mipsplatting_x8to2_baseline_directsrc_v1 \\
+    --sparse_dir /root/autodl-tmp/kitchen \\
     --auto_images \\
+    --priors_dir /root/autodl-tmp/kitchen/priors \\
     --depth_source colmap \\
-    --output_dir ./results/task22_kitchen_lr \\
+    --output_dir ./results/task22_kitchen_mipsplat_lr \\
     --device cuda
 
-If COLMAP binaries are not under ``scene_root``: pass ``--sparse_dir`` (folder that
-contains ``sparse/0`` or the ``sparse/0`` path itself).
+``--image_root`` is inferred from ``--sparse_dir`` when it looks like ``…/kitchen``
+with ``sparse/0/cameras.bin``, or equals ``kitchen`` when ``sparse_dir`` is ``kitchen/sparse/0``.
+Otherwise pass ``--image_root`` explicitly.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,32 +43,62 @@ from models.hr_head import HRGeometricPriorHead
 from utils.dataset import frames_to_tensors, load_scene_frames, pick_image_subdir
 
 
+def _infer_image_root_from_sparse(sparse_path: Path) -> Optional[str]:
+    """
+    sparse_path is either the scene root (…/kitchen with sparse/0/) or …/kitchen/sparse/0.
+    Returns the scene root that should contain LR image folders.
+    """
+    p = sparse_path.resolve()
+    if (p / "sparse" / "0" / "cameras.bin").is_file():
+        return str(p)
+    cam = p / "cameras.bin"
+    if cam.is_file() and p.name == "0" and p.parent.name == "sparse":
+        return str(p.parent.parent)
+    return None
+
+
+def _resolve_image_base(args, scene_root: str, sparse_override: Optional[str]) -> str:
+    if args.image_root:
+        return str(Path(args.image_root).expanduser().resolve())
+    if sparse_override:
+        inferred = _infer_image_root_from_sparse(Path(sparse_override))
+        if inferred:
+            return inferred
+    return scene_root
+
+
 def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--scene_root",
         required=True,
-        help="Scene directory with LR images + sparse/ (SOFSR output or COLMAP-style scene).",
+        help="Mip-splatting train output dir **or** full COLMAP scene; LR files use --image_root / sparse inference.",
+    )
+    p.add_argument(
+        "--image_root",
+        default=None,
+        help="Parent of LR image folder (images / images_8 / …). "
+        "Default: infer from --sparse_dir when it points at kitchen-style tree.",
     )
     p.add_argument(
         "--image_subdir",
         default=None,
-        help="LR image subfolder under scene_root. If omitted with --auto_images, scan defaults.",
+        help="Subfolder under image_root. With --auto_images, scan common names.",
     )
     p.add_argument(
         "--auto_images",
         action="store_true",
-        help="Auto-pick first existing folder among images_8, images, images_2, …",
+        help="Pick first existing images_8 / images / images_2 / … under image_root.",
     )
     p.add_argument(
         "--sparse_dir",
         default=None,
-        help="Override COLMAP dir: folder containing sparse/0 or sparse/0 itself.",
+        help="COLMAP source: directory containing sparse/0 or path to sparse/0 itself.",
     )
     p.add_argument(
         "--priors_dir",
         default=None,
-        help="Folder of StableSR caches (<stem>.png). Omit to run without SR conditioning.",
+        help="StableSR cache folder (<stem>.png). Optional.",
     )
     p.add_argument("--n_frames", type=int, default=8)
     p.add_argument("--target_lr_size", type=int, default=LR_SIZE)
@@ -72,30 +107,24 @@ def _parse_args():
         "--depth_source",
         choices=("colmap", "vggt"),
         default="colmap",
-        help="Sparse COLMAP LR depth vs frozen VGGT depth (needs VGGT_ROOT).",
     )
     p.add_argument("--vggt_root", default=VGGT_ROOT)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--output_dir", default="./results/task22_realdata")
     p.add_argument("--base_channels", type=int, default=96)
-    p.add_argument(
-        "--force_no_sr_prior",
-        action="store_true",
-        help="Do not load / use StableSR conditioning even if priors_dir is set.",
-    )
+    p.add_argument("--force_no_sr_prior", action="store_true")
     return p.parse_args()
 
 
-def _resolve_img_subdir(scene_root: str, args) -> str:
+def _resolve_img_subdir(image_base: str, args) -> str:
     if args.image_subdir is not None:
-        return pick_image_subdir(scene_root, preferred=args.image_subdir)
+        return pick_image_subdir(image_base, preferred=args.image_subdir)
     if args.auto_images:
-        return pick_image_subdir(scene_root, preferred=None)
-    # default legacy: mipnerf-like
+        return pick_image_subdir(image_base, preferred=None)
     try:
-        return pick_image_subdir(scene_root, preferred="images_8")
+        return pick_image_subdir(image_base, preferred="images_8")
     except FileNotFoundError:
-        return pick_image_subdir(scene_root, preferred=None)
+        return pick_image_subdir(image_base, preferred=None)
 
 
 def _stack_views(frames_t: List[Dict[str, Any]], device: str) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -120,20 +149,30 @@ def _stack_views(frames_t: List[Dict[str, Any]], device: str) -> Tuple[torch.Ten
 def main():
     args = _parse_args()
     scene_root = str(Path(args.scene_root).expanduser().resolve())
-    priors_dir = str(Path(args.priors_dir).expanduser().resolve()) if args.priors_dir else None
     sparse_override = str(Path(args.sparse_dir).expanduser().resolve()) if args.sparse_dir else None
+    priors_dir = str(Path(args.priors_dir).expanduser().resolve()) if args.priors_dir else None
 
-    img_dir = _resolve_img_subdir(scene_root, args)
+    image_base = _resolve_image_base(args, scene_root, sparse_override)
+    img_dir = _resolve_img_subdir(image_base, args)
 
     prior_dir_kw = priors_dir if (priors_dir and not args.force_no_sr_prior) else None
 
-    print(f"[data] scene_root  = {scene_root}")
-    print(f"[data] image_subdir= {img_dir}")
-    print(f"[data] sparse_ovr  = {sparse_override or '(scene_root)'}\n[data] priors      = {prior_dir_kw or '(off)'}")
+    print(f"[data] mip/output tag   scene_root = {scene_root}")
+    print(f"[data] image_root (LR)= {image_base}")
+    print(f"[data] image_subdir    = {img_dir}")
+    print(f"[data] sparse_dir      = {sparse_override or '(derived from scene_root)'}")
+    print(f"[data] priors_dir      = {prior_dir_kw or '(off)'}")
+
+    scene_abs = os.path.abspath(scene_root)
+    img_abs = os.path.abspath(image_base)
+    image_root_kw = None
+    if args.image_root or img_abs != scene_abs:
+        image_root_kw = image_base
 
     frames = load_scene_frames(
         scene_root,
         image_subdir=img_dir,
+        image_root=image_root_kw,
         prior_dir=prior_dir_kw,
         prior_subdir=None,
         sparse_dir=sparse_override,
@@ -180,8 +219,7 @@ def main():
         np.save(out_dir / f"{name}_confidence_hr.npy", out["confidence_hr"][0, vi, 0].float().cpu().numpy())
 
     print(f"[ok] Saved {v} views under {out_dir}")
-    dh = tuple(out["depth_hr"].shape)
-    print(f"     shapes: depth_hr {dh}")
+    print(f"     depth_hr shape: {tuple(out['depth_hr'].shape)}")
 
 
 if __name__ == "__main__":
