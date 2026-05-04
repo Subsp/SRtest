@@ -8,7 +8,7 @@ cameras and sparse depth maps.
 import os
 import random
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Optional, Dict
 
 import numpy as np
 from PIL import Image as PILImage
@@ -25,6 +25,21 @@ from .colmap_reader import (
 )
 
 
+_PRIOR_EXTENSIONS = (".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG")
+
+
+def find_prior_sr_path(scene_root: str, prior_subdir: str, frame_stem: str) -> Optional[Path]:
+    """Return HR prior image path (StableSR cache) matching frame stem, or None."""
+    root = Path(scene_root) / prior_subdir
+    if not root.is_dir():
+        return None
+    for ext in _PRIOR_EXTENSIONS:
+        cand = root / f"{frame_stem}{ext}"
+        if cand.is_file():
+            return cand
+    return None
+
+
 def _find_sparse_dir(scene_root: str) -> str:
     """Return path to sparse/0 or sparse directory."""
     for candidate in ["sparse/0", "sparse"]:
@@ -37,6 +52,7 @@ def _find_sparse_dir(scene_root: str) -> str:
 def load_scene_frames(
     scene_root: str,
     image_subdir: str = "images_8",
+    prior_subdir: Optional[str] = None,
     n_frames: int = 8,
     target_lr_size: int = 200,
     seed: int = 42,
@@ -44,9 +60,13 @@ def load_scene_frames(
     """
     Load n_frames training frames from a MipNeRF360 scene.
 
+    If prior_subdir is set (e.g. ``priors``), expects HR RGB cache parallel to
+    image_subdir: ``scene_root/<prior_subdir>/<stem>.png`` resized to SR size.
+
     Returns a list of dicts, each containing:
         name        : image filename stem
         image_lr    : np.uint8 (target_lr_size, target_lr_size, 3)
+        prior_sr_hr : np.uint8 (4*target_lr, 4*target_lr, 3) optional, when prior exists
         K_lr        : 3×3 intrinsic for LR image
         K_sr        : 3×3 intrinsic for 4× SR image (4*target_lr_size)
         R           : 3×3 rotation matrix (world→camera, OpenCV)
@@ -114,8 +134,9 @@ def load_scene_frames(
         )
         depth_lr = interpolate_depth(us, vs, ds, *lr_wh, method="linear")
 
-        frames.append(dict(
-            name     = Path(colmap_img.name).stem,
+        stem = Path(colmap_img.name).stem
+        entry = dict(
+            name     = stem,
             image_lr = image_lr,
             K_lr     = K_lr,
             K_sr     = K_sr,
@@ -123,7 +144,15 @@ def load_scene_frames(
             t        = t,
             depth_lr = depth_lr,
             orig_wh  = orig_wh,
-        ))
+        )
+        if prior_subdir:
+            pp = find_prior_sr_path(scene_root, prior_subdir, stem)
+            if pp is not None:
+                pil_pr = PILImage.open(pp).convert("RGB")
+                pil_pr = pil_pr.resize(sr_wh, PILImage.BICUBIC)
+                entry["prior_sr_hr"] = np.array(pil_pr, dtype=np.uint8)
+
+        frames.append(entry)
 
     return frames
 
@@ -138,7 +167,7 @@ def frames_to_tensors(frames: List[Dict], device="cpu"):
 
     result = []
     for f in frames:
-        result.append({
+        row = {
             "name"    : f["name"],
             "image_lr": torch.from_numpy(f["image_lr"]).float().permute(2, 0, 1).div(255.0).to(device),
             "K_lr"    : torch.from_numpy(f["K_lr"]).float().to(device),
@@ -147,5 +176,8 @@ def frames_to_tensors(frames: List[Dict], device="cpu"):
             "t"       : torch.from_numpy(f["t"]).float().to(device),
             "depth_lr": torch.from_numpy(f["depth_lr"]).float().to(device),
             "orig_wh" : f["orig_wh"],
-        })
+        }
+        if "prior_sr_hr" in f:
+            row["prior_sr_hr"] = torch.from_numpy(f["prior_sr_hr"]).float().permute(2, 0, 1).div(255.0).to(device)
+        result.append(row)
     return result

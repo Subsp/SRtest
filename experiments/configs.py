@@ -15,13 +15,17 @@ SCENES_PHASE0 = ["garden", "kitchen", "bonsai", "room", "counter"]
 FRAMES_PER_SCENE = 8
 
 # LR / SR resolution (4× scale)
-LR_SIZE   = 200   # input to SwinIR and VGGT
+LR_SIZE   = 200   # LR input for VGGT, HR-head conditioning, warp tests
 SR_SCALE  = 4
 SR_SIZE   = LR_SIZE * SR_SCALE  # 800
 
 # MipNeRF360 sub-directory used as LR source (images_8 ≈ 1/8 of full res)
 LR_IMAGE_SUBDIR = "images_8"
 HR_IMAGE_SUBDIR = "images_2"    # used for oracle training in Task 0.2
+
+# StableSR (or other) HR cache: sibling of images_8 under each scene
+# Example: mipnerf360/kitchen/images_8/…  ↔  mipnerf360/kitchen/priors/<stem>.png
+PRIORS_SUBDIR = "priors"
 
 # ── Task 0.1 thresholds (PSNR) ───────────────────────────────────────────────
 PSNR_SEVERE    = 22.0   # < 22: view-consistent SR module mandatory
@@ -41,6 +45,7 @@ ABSREL_FINETUNE = 0.20  # 0.10–0.20: HR Head strengthening needed
 #       images_2/
 #       images_4/
 #       images_8/      ← LR source
+#       priors/        ← StableSR HR cache (PRIORS_SUBDIR)
 #       sparse/0/
 #         cameras.bin
 #         images.bin

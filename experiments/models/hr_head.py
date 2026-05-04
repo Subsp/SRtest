@@ -1,0 +1,260 @@
+"""
+Phase 2.2 – HR Geometric Prior Head (dual output heads, shared backbone).
+
+Consumes LR-resolution conditioning (VGGT depth + optional LR RGB +
+optional StableSR prior downsampled to LR). Produces HR maps aligned to
+oracle / MipNeRF SR resolution (default 800×800 for 200→4×).
+
+Inference contract (per batch of views):
+  depth_hr:    (B, V, 1, H_sr, W_sr), strictly positive
+  normal_hr:   (B, V, 3, H_sr, W_sr), unit vectors along channel dim
+  confidence:  (B, V, 1, H_sr, W_sr), values in (0, 1)
+
+Training losses and VGGT aggregation live in Phase 2.3 — this module is
+the architecture + forward pass only.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+def _make_norm(num_channels: int) -> nn.Module:
+    return nn.GroupNorm(min(32, num_channels), num_channels)
+
+
+class DoubleConv(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
+            _make_norm(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False),
+            _make_norm(out_ch),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class HRGeometricPriorHead(nn.Module):
+    """
+    U-Net backbone (LR → HR via skip + bilinear enlarge) + three heads.
+
+    Typical inputs (stacked along channel dim at LR spatial size):
+      - depth_lr:  VGGT disparity/depth resized to LR (1 ch), log-space optional
+      - rgb_lr:    LR RGB in [0,1] if use_rgb
+      - sr_prior_lr: StableSR RGB downsampled to LR if use_sr_prior
+    """
+
+    def __init__(
+        self,
+        in_channels: Optional[int] = None,
+        *,
+        use_rgb: bool = True,
+        use_sr_prior: bool = True,
+        depth_in_log_space: bool = True,
+        # ~28M trainable params with default 96 (dual heads share backbone).
+        base_channels: int = 96,
+        sr_scale: int = 4,
+    ) -> None:
+        super().__init__()
+        self.use_rgb = use_rgb
+        self.use_sr_prior = use_sr_prior
+        self.depth_in_log_space = depth_in_log_space
+        self.sr_scale = int(sr_scale)
+        self.base_channels = base_channels
+
+        if in_channels is not None:
+            ic = int(in_channels)
+        else:
+            ic = 1 + (3 if use_rgb else 0) + (3 if use_sr_prior else 0)
+
+        b = base_channels
+        self.inc = DoubleConv(ic, b)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(b, b * 2))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(b * 2, b * 4))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(b * 4, b * 8))
+
+        self.up1 = nn.Conv2d(b * 8 + b * 4, b * 4, 1, bias=False)
+        self.dec1 = DoubleConv(b * 4, b * 4)
+
+        self.up2 = nn.Conv2d(b * 4 + b * 2, b * 2, 1, bias=False)
+        self.dec2 = DoubleConv(b * 2, b * 2)
+
+        self.up3 = nn.Conv2d(b * 2 + b, b, 1, bias=False)
+        self.dec3 = DoubleConv(b, b)
+
+        hr_mid = max(32, b // 2)
+        self.refine = nn.Sequential(
+            DoubleConv(b, hr_mid),
+            nn.Conv2d(hr_mid, hr_mid, 3, padding=1, bias=False),
+            _make_norm(hr_mid),
+            nn.ReLU(inplace=True),
+        )
+
+        self.head_depth = nn.Conv2d(hr_mid, 1, 3, padding=1)
+        self.head_normal = nn.Conv2d(hr_mid, 3, 3, padding=1)
+        self.head_confidence = nn.Conv2d(hr_mid, 1, 3, padding=1)
+
+        self._init_conv_weights()
+
+    def _init_conv_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def expected_lr_channels(self) -> int:
+        return 1 + (3 if self.use_rgb else 0) + (3 if self.use_sr_prior else 0)
+
+    def compose_lr_input(
+        self,
+        depth_lr: torch.Tensor,
+        rgb_lr: Optional[torch.Tensor] = None,
+        sr_prior_hr: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        depth_lr: (B,V,1,H,W) positive depth or disparity from VGGT
+        rgb_lr:   (B,V,3,H,W) in [0,1], optional if use_rgb
+        sr_prior_hr: (B,V,3,sH,sW) StableSR RGB at HR — downsampled internally
+        Returns (B,V,C,H,W).
+        """
+        if depth_lr.dim() != 5:
+            raise ValueError(f"depth_lr must be 5D, got shape {tuple(depth_lr.shape)}")
+        b, v, _, h, w = depth_lr.shape
+        eps = 1e-6
+        d = depth_lr
+        if self.depth_in_log_space:
+            d = torch.log(d.clamp_min(eps))
+
+        parts = [d]
+
+        if self.use_rgb:
+            if rgb_lr is None:
+                raise ValueError("use_rgb=True but rgb_lr is None")
+            parts.append(rgb_lr)
+
+        if self.use_sr_prior:
+            if sr_prior_hr is None:
+                raise ValueError("use_sr_prior=True but sr_prior_hr is None")
+            if sr_prior_hr.shape[-2:] != (h * self.sr_scale, w * self.sr_scale):
+                sr_prior_hr = F.interpolate(
+                    sr_prior_hr.flatten(0, 1),
+                    size=(h * self.sr_scale, w * self.sr_scale),
+                    mode="bilinear",
+                    align_corners=False,
+                ).unflatten(0, (b, v))
+            sr_lr = F.interpolate(
+                sr_prior_hr.flatten(0, 1),
+                size=(h, w),
+                mode="bilinear",
+                align_corners=False,
+            ).unflatten(0, (b, v))
+            parts.append(sr_lr)
+
+        x = torch.cat(parts, dim=2)
+        return x.contiguous()
+
+    def forward_tensors(
+        self,
+        lr_stack: torch.Tensor,
+        *,
+        _lr_hw: Tuple[int, int],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        lr_stack: (B*V, C, H_lr, W_lr)
+        _lr_hw:   reserved for future validation / profiling hooks.
+        Returns dict depth_hr, normal_hr, confidence with leading (B,V,...) restored by caller.
+        """
+        _, _, h_lr, w_lr = lr_stack.shape
+        h_sr = int(round(h_lr * self.sr_scale))
+        w_sr = int(round(w_lr * self.sr_scale))
+
+        x0 = self.inc(lr_stack)
+        x1 = self.down1(x0)
+        x2 = self.down2(x1)
+        x3 = self.down3(x2)
+
+        y = x3
+
+        def _crop_to(h_ref: torch.Tensor, y_: torch.Tensor) -> torch.Tensor:
+            th, tw = h_ref.shape[2:]
+            uh, uw = y_.shape[2], y_.shape[3]
+            if (uh, uw) == (th, tw):
+                return y_
+            if uh >= th and uw >= tw:
+                return y_[..., :th, :tw]
+            return F.interpolate(y_, size=(th, tw), mode="bilinear", align_corners=False)
+
+        y = F.interpolate(y, scale_factor=2.0, mode="bilinear", align_corners=False)
+        y = torch.cat([_crop_to(x2, y), y], dim=1)
+        y = self.up1(y)
+        y = self.dec1(y)
+
+        y = F.interpolate(y, scale_factor=2.0, mode="bilinear", align_corners=False)
+        y = torch.cat([_crop_to(x1, y), y], dim=1)
+        y = self.up2(y)
+        y = self.dec2(y)
+
+        y = F.interpolate(y, scale_factor=2.0, mode="bilinear", align_corners=False)
+        y = torch.cat([_crop_to(x0, y), y], dim=1)
+        y = self.up3(y)
+        y = self.dec3(y)
+
+        y = F.interpolate(y, size=(h_sr, w_sr), mode="bilinear", align_corners=False)
+        y = self.refine(y)
+
+        depth = F.softplus(self.head_depth(y)) + 1e-3
+        normal = self.head_normal(y)
+        normal = F.normalize(normal, dim=1, eps=1e-6)
+        confidence = torch.sigmoid(self.head_confidence(y))
+
+        return {
+            "depth_hr": depth,
+            "normal_hr": normal,
+            "confidence_hr": confidence,
+        }
+
+    def forward(
+        self,
+        depth_lr: torch.Tensor,
+        rgb_lr: Optional[torch.Tensor] = None,
+        sr_prior_hr: Optional[torch.Tensor] = None,
+        lr_stack: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Either pass lr_stack (B,V,C,H,W) fully composed,
+        OR pass depth_lr (+ optional tensors) for automatic composition.
+
+        Outputs each (B,V,…,h_sr,w_sr).
+        """
+        if lr_stack is None:
+            lr_stack = self.compose_lr_input(
+                depth_lr, rgb_lr=rgb_lr, sr_prior_hr=sr_prior_hr
+            )
+
+        if lr_stack.dim() != 5:
+            raise ValueError(f"lr_stack must be (B,V,C,H,W); got {tuple(lr_stack.shape)}")
+
+        b, v, _, h_lr, w_lr = lr_stack.shape
+        bv = b * v
+        x_in = lr_stack.reshape(bv, lr_stack.shape[2], h_lr, w_lr)
+
+        out = self.forward_tensors(x_in, _lr_hw=(h_lr, w_lr))
+        pooled: Dict[str, torch.Tensor] = {}
+        for k, t in out.items():
+            _, c, hh, ww = t.shape
+            pooled[k] = t.reshape(b, v, c, hh, ww)
+        return pooled
+
+
+def count_parameters(module: nn.Module) -> int:
+    return sum(p.numel() for p in module.parameters() if p.requires_grad)

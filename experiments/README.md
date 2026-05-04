@@ -9,8 +9,12 @@ committing to full implementation.
 
 ```
 experiments/
-├── configs.py                  # 场景列表、分辨率、判定阈值
+├── configs.py                  # 场景列表、分辨率、`priors/` 常量、阈值
 ├── requirements.txt
+│
+├── models/
+│   ├── __init__.py
+│   └── hr_head.py              # Phase 2.2 HR Geometric Prior Head
 │
 ├── utils/
 │   ├── colmap_reader.py        # COLMAP binary 读取 + 稀疏深度计算
@@ -21,6 +25,7 @@ experiments/
 │
 ├── task01_2dsr_consistency.py  # Task 0.1 主脚本
 ├── task02_vggt_geometry.py     # Task 0.2 主脚本
+├── task22_hr_head_smoke.py   # Phase 2.2 HR Head 形状/参数量自检
 ├── task02_oracle_train.sh      # 生成 oracle 深度（mip-splatting 训练）
 ├── task02_oracle_render.py     # 深度图转换为 .npy
 │
@@ -61,6 +66,7 @@ mipnerf360/
     images_2/        # 1/2 分辨率（oracle 训练用）
     images_4/
     images_8/        # ← LR 源 (Task 0.1 & 0.2)
+    priors/          # ← StableSR 等 HR cache（与 images_8 同级，帧 stem 对齐）
     sparse/0/
       cameras.bin
       images.bin
@@ -75,7 +81,7 @@ mipnerf360/
 
 ## Task 0.1 – 2DSR 视角不一致严重性测试
 
-**原理**：对每个场景取 8 帧 → SwinIR ×4 SR → 用 COLMAP GT 相机做跨视角 backward warp → 比较 warp 结果与直接 SR 结果的 PSNR/SSIM
+**原理**：对每个场景取 8 帧 → 读取 StableSR **预生成** SR（`scene/priors/` 或通过 `--sr_dir`）→ 用 COLMAP GT 相机做跨视角 backward warp → 比较 warp 结果与直接 SR 结果的 PSNR/SSIM。**也可**不传 `--sr_dir` 时使用内置 SwinIR 实时推理（见脚本说明）。
 
 ```bash
 bash run_task01.sh /path/to/mipnerf360 ./results/task01 cuda
@@ -146,18 +152,34 @@ bash run_task02.sh /path/to/mipnerf360 ./results/task02/oracle ./results/task02 
 
 ---
 
+## Phase 2.2 – HR Geometric Prior Head（结构）
+
+模块：`models/hr_head.py` 中 `HRGeometricPriorHead`。条件输入为 **LR 尺度** 拼成的张量：VGGT 深度（可选 log）、LR RGB、以及 **StableSR `priors/` 的 HR 图经双线性下采样到 LR** 作为第三路条件；输出 `depth_hr` / `normal_hr` / `confidence_hr`（默认 800×800）。
+
+自检：
+
+```bash
+cd experiments
+python task22_hr_head_smoke.py --device cuda
+```
+
+数据集加载：`utils/dataset.load_scene_frames(..., prior_subdir="priors")` 会为存在文件的帧附加 `prior_sr_hr`。
+
+---
+
 ## 注意事项
 
-1. **SwinIR 权重**：Task 0.1 首次运行时自动从 GitHub releases 下载
+1. **StableSR `priors/`**：每张 SR 图与 `images_8` 下同 stem；`configs.PRIORS_SUBDIR` 默认 `priors`。
+2. **SwinIR 权重**：Task 0.1 **未指定 `--sr_dir` 且走 SwinIR 路径时**会自动从 GitHub releases 下载
    (~130 MB)，存放在 `third_party/weights/`。
 
-2. **VGGT 权重**：Task 0.2 首次运行时自动从 HuggingFace 下载
+3. **VGGT 权重**：Task 0.2 首次运行时自动从 HuggingFace 下载
    (~4 GB)，存放在 `../vggt/model.pt`。
 
-3. **COLMAP 稀疏深度质量**：`images_8` 下的特征点较少，深度插值可能
+4. **COLMAP 稀疏深度质量**：`images_8` 下的特征点较少，深度插值可能
    在部分场景存在大面积空洞。可通过 `--image_subdir images_4` 改用更
    高分辨率的 LR 来增加稀疏点密度。
 
-4. **Oracle 深度格式**：mip-splatting 默认不输出深度图；
+5. **Oracle 深度格式**：mip-splatting 默认不输出深度图；
    `task02_oracle_render.py` 会尝试从渲染输出中提取深度通道（EXR/16-bit PNG）。
    如果深度渲染不可用，可修改 `mip-splatting/render.py` 添加深度输出。

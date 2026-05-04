@@ -18,7 +18,7 @@
 
 ## 二、核心 Contributions（论文卖点）
 
-1. **Geometry-Anchored Initialization & Supervision**：用 HR multi-view consistent 几何 prior 取代 SfM 初始化、并在 per-scene 优化全程作 confidence-weighted supervision，锁住几何使其不被 2DSR 视角不一致拉扯。
+1. **Geometry-Anchored Initialization & Supervision**：用 HR multi-view consistent 几何 prior 取代 SfM 初始化、并在 per-scene 优化全程作 confidence-weighted supervision，锁住几何使其不被 **StableSR 等单视角 SR 先验** 的视角不一致拉扯。
 2. **Geometry-Aware Densification** ⭐ 核心 novelty：把 prior 几何信息注入 GS 的 split / clone / prune 决策与方向，使高斯沿 prior 表面生长。
 3. **Mip-Aware Scale Bootstrapping**：从 HR depth 推算每像素几何尺度，bootstrap Mip-Splatting 的 3D / 2D filter 参数。
 4. **HR Geometric Prior Module (building block)**：基于 frozen VGGT + 自训 HR Head，在 LR 输入下输出 HR multi-view consistent depth / normal / confidence；HD-VGGT 开源后可热替换。
@@ -30,18 +30,19 @@
 ```text
 ┌── Stage 1: Feed-Forward (一次推理 < 1s) ──────────────────────┐
 │                                                                │
-│  LR multi-view (200×200)                                       │
+│  LR multi-view (200×200, images_8)                             │
 │         │                                                      │
 │         ├──► [Frozen VGGT] ──► coarse depth + cameras          │
 │         │                                                      │
 │         ├──► [HR Head (trained)] ──► D_HR, N_HR, C_HR (800×800)│
 │         │                                                      │
-│         └──► [SwinIR (frozen)] ──► I_2dsr (800×800)            │
+│         └──► [StableSR 预计算 cache] ──► I_SR 存于 priors/     │
+│                     (与 images_8 同级目录，供 HR Head / VC)   │
 │                                  │                             │
 │                  [VGGT cameras + epipolar attn]                │
 │                                  │                             │
 │                                  ▼                             │
-│                          F_VCSR (view-consistent SR feats)     │
+│                          F_VCSR (view-consistent SR feats)    │
 └────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -73,6 +74,7 @@
 
 ### SR Setting
 - 训练 LR：`images_8`
+- StableSR HR 缓存：`priors/`（与 `images_8` **同级**，每帧文件名 stem 对齐，如 `kitchen/priors/frame_001.png`；供 HR Head 条件与 VC-SR 模块）
 - 测试 HR：`images_2` / `images_4` / `full`
 
 ### 指标
@@ -90,7 +92,7 @@
 | 范式 | Pure feed-forward | Per-scene + 2DSR pseudo | Feed-forward 几何 | **Hybrid: FF prior + per-scene** |
 | Setting | 64→256 sparse | 200→800 dense | 通用 reconstruction | **200→800 dense (标准 HRNVS)** |
 | 几何 prior | 无 | 无 | 自身就是 | **复用 + 注入到 GS** |
-| 2DSR 监督 | 反对 | 直接用 | N/A | **VC-SR features 后用，confidence-weighted** |
+| 2DSR 监督 | 反对 | 直接用 | N/A | **VC-SR / confidence-weighted；RGB 先验来自 StableSR `priors/`** |
 | 几何评测 | 不报 | 不报 | 报 | **作为核心卖点报** |
 
 ---
@@ -113,9 +115,9 @@
 ### Phase 0：风险排雷（1–3 天）⚠️ 优先级最高
 
 - [x] **0.3** 查 SRGS / GaussianSR 在 Mip-NeRF360 4× SR 下的真实 PSNR / SSIM 数字 *(用户已 done，待提供数字给协作方 anchor)*
-- [ ] **0.1** 2DSR 视角不一致严重性测试（半天）
+- [ ] **0.1** 2DSR / SR 先验视角不一致严重性测试（半天）
   - 数据：Mip-NeRF360 5 场景（garden, kitchen, bonsai, room, counter）
-  - 流程：images_8 → SwinIR → 跨视角 warp → edge-weighted PSNR / SSIM
+  - 流程：`images_8` + **StableSR 输出（`priors/` 或 `--sr_dir`）** → 跨视角 warp → edge-weighted PSNR / SSIM（见 `task01_2dsr_consistency.py`）
   - 阈值：PSNR > 28 = 可忽略；22–28 = 中度（confidence weighting 即可）；< 22 = 严重（必做 VC-SR module）
 - [ ] **0.2** VGGT 在  LR 几何 fidelity 测试（1 天）
   - 数据：同上 5 场景
@@ -134,7 +136,7 @@
 ### Phase 2：Stage 1 模块实现（1.5 周）
 
 - [ ] **2.1** Frozen VGGT 推理 wrapper（输入 LR multi-view → 输出 depth + cameras + features）
-- [ ] **2.2** HR Head 实现（dual-branch，借鉴 HD-VGGT 思路；约 30M 参数）
+- [x] **2.2** HR Head 实现（共享 U-Net backbone + depth / normal / confidence 头；默认 `base_channels=96` ≈28M；见 `experiments/models/hr_head.py`，冒烟 `experiments/task22_hr_head_smoke.py`）
 - [ ] **2.3** HR Head 训练（数据：Mip-NeRF360 dense view + oracle GS distillation；A100 单卡 1–2 天）
 - [ ] **2.4** View-Consistent SR features 模块（复用 VGGT cameras + epipolar attention）
 - [ ] **2.5** Stage 1 端到端验证：50 场景 AbsRel + cross-view consistency 指标
@@ -185,7 +187,7 @@
 ## 九、立即下一步（今天 / 明天）
 
 1. **【5 分钟，待用户】** 把 Phase 0.3 查到的 SRGS / GaussianSR PSNR / SSIM 数字告诉我，作为目标线
-2. **【今天/明天，半天】** 任务 0.1：跑 SwinIR + 跨视角 warp 实验
+2. **【今天/明天，半天】** 任务 0.1：StableSR `priors/`（或 `--sr_dir`）+ 跨视角 warp 实验
 3. **【明天，1 天】** 任务 0.2：VGGT geometry fidelity 实验
 4. **【可选，30 分钟】** 我顺手扫 `mip-splatting/hybrid_sdfgs/` 看是否有可复用代码
 
