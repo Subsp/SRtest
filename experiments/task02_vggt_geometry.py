@@ -172,10 +172,15 @@ def load_oracle_depth(oracle_scene_dir: str, frame_name: str) -> np.ndarray | No
 
     Returns float32 (H, W) array or None if not found.
     """
-    # Try .npy first (preferred)
-    npy_path = Path(oracle_scene_dir) / "train" / "ours_30000" / "depth" / f"{frame_name}.npy"
-    if npy_path.exists():
-        return np.load(str(npy_path)).astype(np.float32)
+    # Try multiple layouts (flat and nested)
+    candidates = [
+        Path(oracle_scene_dir) / f"{frame_name}.npy",
+        Path(oracle_scene_dir) / "train" / "ours_30000" / "depth" / f"{frame_name}.npy",
+        Path(oracle_scene_dir) / "depth" / f"{frame_name}.npy",
+    ]
+    for npy_path in candidates:
+        if npy_path.exists():
+            return np.load(str(npy_path)).astype(np.float32)
 
     # Try EXR (output from mip-splatting render)
     try:
