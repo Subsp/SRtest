@@ -113,6 +113,16 @@ def _parse_args():
     p.add_argument("--output_dir", default="./results/task22_realdata")
     p.add_argument("--base_channels", type=int, default=96)
     p.add_argument("--force_no_sr_prior", action="store_true")
+    p.add_argument(
+        "--ckpt",
+        default=None,
+        help="Checkpoint .pt（纯 state_dict 或 train_hr_head 保存的 {\"model\": ...}）。不传则为随机初始化。",
+    )
+    p.add_argument(
+        "--oracle_dir",
+        default=None,
+        help="可选：oracle 深度目录，导出后对每帧算 AbsRel / scale-inv L1 / RMSE（对齐尺度）。",
+    )
     return p.parse_args()
 
 
@@ -201,6 +211,19 @@ def main():
         base_channels=args.base_channels,
         sr_scale=sr_scale,
     ).to(args.device)
+
+    if args.ckpt:
+        ck_path = Path(args.ckpt).expanduser().resolve()
+        try:
+            blob = torch.load(str(ck_path), map_location=args.device, weights_only=False)
+        except TypeError:
+            blob = torch.load(str(ck_path), map_location=args.device)
+        sd = blob["model"] if isinstance(blob, dict) and "model" in blob else blob
+        bad = model.load_state_dict(sd, strict=False)
+        if bad.missing_keys or bad.unexpected_keys:
+            print(f"[ckpt] load strict=False missing={bad.missing_keys[:3]}… unexpected={bad.unexpected_keys[:3]}…")
+        print(f"[ckpt] {ck_path}")
+
     model.eval()
 
     fwd_kw: Dict[str, Any] = {"depth_lr": depth_b, "rgb_lr": rgb_b}
@@ -220,6 +243,51 @@ def main():
 
     print(f"[ok] Saved {v} views under {out_dir}")
     print(f"     depth_hr shape: {tuple(out['depth_hr'].shape)}")
+
+    if args.oracle_dir:
+        import csv
+
+        import torch.nn.functional as F
+
+        from task02_vggt_geometry import load_oracle_depth
+        from utils.metrics import compute_all_depth_metrics
+
+        ora = str(Path(args.oracle_dir).expanduser().resolve())
+        rows: List[dict] = []
+        for vi in range(v):
+            name = frames_t[vi]["name"]
+            pred = out["depth_hr"][0, vi, 0].detach().float().cpu().numpy()
+            gd = load_oracle_depth(ora, name)
+            if gd is None:
+                print(f"[oracle] skip {name} (missing)")
+                continue
+            if gd.ndim != 2:
+                gd = np.squeeze(gd)
+            gt_t = torch.from_numpy(gd.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+            gt = (
+                F.interpolate(gt_t, size=(SR_SIZE, SR_SIZE), mode="bilinear", align_corners=False)
+                .squeeze()
+                .numpy()
+            )
+            m = gt > 1e-6
+            metric = compute_all_depth_metrics(pred, gt, mask=m)
+            metric["frame"] = name
+            rows.append(metric)
+        if rows:
+            csv_path = out_dir / "depth_metrics_vs_oracle.csv"
+            keys = sorted(rows[0].keys())
+            with open(csv_path, "w", newline="", encoding="utf-8") as fp:
+                w = csv.DictWriter(fp, fieldnames=keys)
+                w.writeheader()
+                for r in rows:
+                    w.writerow(r)
+            import statistics as stats
+
+            ar = stats.mean(float(r["abs_rel"]) for r in rows if not np.isnan(r["abs_rel"]))
+            si = stats.mean(float(r["scale_inv_l1"]) for r in rows if not np.isnan(r["scale_inv_l1"]))
+            print(f"[oracle] mean AbsRel={ar:.4f}  ScaleInvL1={si:.4f} → {csv_path}")
+        else:
+            print("[oracle] no overlaps with oracle depth; check oracle_dir stems")
 
 
 if __name__ == "__main__":
