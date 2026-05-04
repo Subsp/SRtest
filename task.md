@@ -137,7 +137,7 @@
 
 - [ ] **2.1** Frozen VGGT 推理 wrapper（输入 LR multi-view → 输出 depth + cameras + features）
 - [x] **2.2** HR Head 实现（共享 U-Net backbone + depth / normal / confidence 头；默认 `base_channels=96` ≈28M；见 `experiments/models/hr_head.py`，冒烟 `experiments/task22_hr_head_smoke.py`）
-- [ ] **2.3** HR Head 训练（数据：Mip-NeRF360 dense view + oracle GS distillation；A100 单卡 1–2 天）
+- [x] **2.3** HR Head 训练（v0：`experiments/train_hr_head.py`，oracle 深度 + 可选 `priors`；法向/大规模扫描待加）
 - [ ] **2.4** View-Consistent SR features 模块（复用 VGGT cameras + epipolar attention）
 - [ ] **2.5** Stage 1 端到端验证：50 场景 AbsRel + cross-view consistency 指标
 
