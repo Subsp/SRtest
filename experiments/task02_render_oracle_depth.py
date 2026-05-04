@@ -123,14 +123,22 @@ def main():
 
     pipe = pipe_params.extract(fake_args)
 
+    # ── auto-detect render() signature ────────────────────────────────────────
+    import inspect
+    render_sig = inspect.signature(render)
+    render_kwargs = {}
+    if "kernel_size" in render_sig.parameters:
+        render_kwargs["kernel_size"] = kernel_size
+    if "scale_factor" in render_sig.parameters:
+        render_kwargs["scale_factor"] = 1.0
+    if "return_aux" in render_sig.parameters:
+        render_kwargs["return_aux"] = True
+    print(f"[oracle] render() kwargs: {list(render_kwargs.keys())}")
+
     n_saved = 0
     for cam in tqdm(train_cams, desc="Render depth"):
         with torch.no_grad():
-            out = render(
-                cam, gaussians, pipe, background,
-                kernel_size=kernel_size,
-                scale_factor=1.0,
-            )
+            out = render(cam, gaussians, pipe, background, **render_kwargs)
         # depth lives in 'depth' key for merged renderer; fall back to 'render_full'
         depth = out.get("depth", None)
         if depth is None:
