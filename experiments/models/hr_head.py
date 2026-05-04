@@ -1,10 +1,15 @@
 """
 Phase 2.2 – HR Geometric Prior Head (dual output heads, shared backbone).
 
+**This file defines ``HRGeometricPriorHead``: a canonical **CNN U-Net**
+(encoder–decoder with skip connections), *not* the HD-VGGT architecture.
+HD-VGGT-style LR-ViT + φ_guide / φ_feat / φ_fuse is in ``models/hr_head_hd_vggt_style.py``
+(``HDVGGTStyleGeomHead``).
+
 Consumes LR-resolution conditioning (VGGT depth + optional LR RGB +
 optional StableSR prior downsampled to LR *and*, when ``use_sr_prior``,
 optional **HR-resolution** StableSR fused after the decoder upsample).
-
+Produces HR maps aligned to
 oracle / MipNeRF SR resolution (default 800×800 for 200→4×).
 
 Inference contract (per batch of views):

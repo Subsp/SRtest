@@ -5,16 +5,20 @@ HD-VGGT–aligned HR geometric head (conceptual parity with Chen et al., arXiv:2
   * **LR branch:** ViT encoder on patch token grid of the *same LR stack*
     ``[log depth, LR RGB?, SR-at-LR?]`` — analogue of coarse/global reasoning at low resolution;
     not the pretrained multi-view VGGT trunk.
-  * **HR branch:** **Guidance-conditioned upsampler** —
-    coarse ViT maps are lifted to HR, fused with convolutional embeddings of HR guidance
-    (StableSR RGB if provided, otherwise bilinear-upsampled LR RGB), matching Fig. 1 /
-    Eq. (3–5) style decomposition (``phi_guidance``, ``phi_feat``, ``phi_fuse``).
-  * **HR refiner:** convolutional surrogate of the shallow ``T_refine`` in HD-VGGT
-    (transformer refinement can replace this stack if multi-GPU / window attention is wired).
+  * **HR branch (§3.2.2):** ``phi_feat``: conv refine on coarse features;
+    bilinear upsample coarse → HR; ``phi_guide``: HR **guidance embeddings**.
+    With ``use_sr_prior``, guidance is **6 ch = concat(I_sr, I_up)** — StableSR at HR and
+    bilinear-ups LR RGB separately, so super-res texture is explicit (not merged into one upsampled RGB).
+    Without SR path, guidance is **3 ch = I_up** only.
+    ``phi_fuse``: concatenate lifted coarse HR map with ``phi_guide``, then shallow conv stack.
+  * **HR refiner:** convolutional surrogate of shallow ``T_refine`` in HD-VGGT
+    (ViT refinement can substitute later).
 
-Out of scope here: full ``T_coarse`` multi-view VGGT-1B, Feature Modulation §3.3, official HD-VGGT weights.
+``HRGeometricPriorHead`` (**经典 CNN U-Net**，编码器–解码器+skip) 放在 ``hr_head.py``，与本类的「LR ViT + φ 分解」**不是同一套 backbone**。
 
-See ``HRGeometricPriorHead`` for the U-Net baseline and ``compose_geom_lr_stack`` for inputs.
+Out of scope: full ``T_coarse`` multi-view VGGT-1B, Feature Modulation §3.3, official HD-VGGT weights.
+
+See ``compose_geom_lr_stack`` for shared LR conditioning.
 """
 
 from __future__ import annotations
@@ -92,8 +96,10 @@ class HDVGGTStyleGeomHead(nn.Module):
         gw = guidance_width
         fw = fuse_width
 
+        # φ_guide: HR high-frequency path. With SR prior: 6ch = [I_sr || I_up] (paper I^HR + explicit SR).
+        guide_in = 6 if use_sr_prior else 3
         self.phi_guide = nn.Sequential(
-            nn.Conv2d(3, gw, 5, padding=2, bias=False),
+            nn.Conv2d(guide_in, gw, 5, padding=2, bias=False),
             _make_norm(gw),
             nn.ReLU(inplace=True),
             nn.Conv2d(gw, gw, 3, padding=1, bias=False),
@@ -156,40 +162,59 @@ class HDVGGTStyleGeomHead(nn.Module):
             sr_scale=self.sr_scale,
         )
 
-    def _hr_guidance(
+    def _build_hr_guidance_pack(
         self,
         rgb_lr: Optional[torch.Tensor],
         sr_prior_hr: Optional[torch.Tensor],
+        *,
+        bv: int,
         h_sr: int,
         w_sr: int,
     ) -> torch.Tensor:
-        if sr_prior_hr is not None:
-            gh = sr_prior_hr
-            if gh.shape[-2:] != (h_sr, w_sr):
-                gh = F.interpolate(
-                    gh.flatten(0, 1),
-                    size=(h_sr, w_sr),
-                    mode="bilinear",
-                    align_corners=False,
-                ).unflatten(0, gh.shape[:2])
-            return gh.flatten(0, 1).clamp(0.0, 1.0)
+        """
+        Pack HR guidance for φ_guide (paper §3.2.2).
+        - use_sr_prior: 6 channels = StableSR RGB || bilinear LR RGB（显式拆开超分与中频上采样）.
+        - else: 3 channels = I_up only.
+        """
         if rgb_lr is None:
+            raise ValueError("rgb_lr required for HR guidance I_up.")
+
+        i_up = F.interpolate(
+            rgb_lr.flatten(0, 1),
+            size=(h_sr, w_sr),
+            mode="bilinear",
+            align_corners=False,
+        ).clamp(0.0, 1.0)
+
+        if not self.use_sr_prior:
+            return i_up
+
+        if sr_prior_hr is None:
             raise ValueError(
-                "HD-VGGT style head needs SR prior or RGB for HR guidance branch (§3.2.2)."
+                "use_sr_prior=True but sr_prior_hr is None — cannot build 6ch guidance pack."
             )
-        g = rgb_lr.flatten(0, 1)
-        gh = F.interpolate(g, size=(h_sr, w_sr), mode="bilinear", align_corners=False)
-        return gh.clamp(0.0, 1.0)
+        i_sr = sr_prior_hr.reshape(bv, 3, sr_prior_hr.shape[-2], sr_prior_hr.shape[-1]).clamp(
+            0.0, 1.0
+        )
+        if i_sr.shape[-2:] != (h_sr, w_sr):
+            i_sr = F.interpolate(
+                i_sr, size=(h_sr, w_sr), mode="bilinear", align_corners=False
+            ).clamp(0.0, 1.0)
+        return torch.cat([i_sr, i_up], dim=1)
 
     def forward_tensors(
         self,
         lr_stack: torch.Tensor,
-        hr_guidance_rgb: torch.Tensor,
+        hr_guidance: torch.Tensor,
         *,
         _lr_hw: Tuple[int, int],
         h_sr: int,
         w_sr: int,
     ) -> Dict[str, torch.Tensor]:
+        """
+        lr_stack: (B*V, C, H_lr, W_lr)
+        hr_guidance: φ_guide input — **6 ch** (= I_sr ‖ I_up) if ``use_sr_prior``, else **3 ch** I_up.
+        """
         _, _, h_lr, w_lr = lr_stack.shape
         ps = self.patch_size
         pad_h = (ps - h_lr % ps) % ps
@@ -224,7 +249,7 @@ class HDVGGTStyleGeomHead(nn.Module):
         fused_hr = F.interpolate(
             fused_lr, size=(h_sr, w_sr), mode="bilinear", align_corners=False
         )
-        g = self.phi_guide(hr_guidance_rgb)
+        g = self.phi_guide(hr_guidance)
         y = self.phi_fuse(torch.cat([fused_hr, g], dim=1))
         y = self.refiner(y)
 
@@ -257,7 +282,9 @@ class HDVGGTStyleGeomHead(nn.Module):
         bv = b * v
         x_in = lr_stack.reshape(bv, lr_stack.shape[2], h_lr, w_lr)
 
-        gh = self._hr_guidance(rgb_lr, sr_prior_hr, h_sr, w_sr)
+        gh = self._build_hr_guidance_pack(
+            rgb_lr, sr_prior_hr, bv=bv, h_sr=h_sr, w_sr=w_sr
+        )
 
         out = self.forward_tensors(
             x_in, gh, _lr_hw=(h_lr, w_lr), h_sr=h_sr, w_sr=w_sr
