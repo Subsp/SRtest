@@ -123,6 +123,12 @@ def _parse_args():
         default=None,
         help="可选：oracle 深度目录，导出后对每帧算 AbsRel / scale-inv L1 / RMSE（对齐尺度）。",
     )
+    p.add_argument(
+        "--eval_vggt_upsampled_baseline",
+        action="store_true",
+        help="需同时提供 --oracle_dir：对冻结 VGGT 的 LR 深度双线性上到 HR(vs SR_SIZE)，"
+        "用与 HR Head **相同**oracle 度量；便于回答「有无强过仅用 VGGT+上采样」。",
+    )
     return p.parse_args()
 
 
@@ -192,14 +198,17 @@ def main():
     )
     frames_t = frames_to_tensors(frames, device=args.device)
 
-    if args.depth_source == "vggt":
+    vggt_vo_cache = None
+    need_vggt = args.depth_source == "vggt" or args.eval_vggt_upsampled_baseline
+    if need_vggt:
         import task02_vggt_geometry as t2
 
         model_vggt, pose_fn = t2._setup_vggt(args.vggt_root, args.device)
-        vggt_out = t2.run_vggt_on_frames(model_vggt, pose_fn, frames_t, args.device)
-        for i, f in enumerate(frames_t):
-            d = torch.from_numpy(vggt_out[i]["depth_vggt"]).float().to(args.device).clamp_min(1e-3)
-            f["depth_lr"] = d.unsqueeze(0)
+        vggt_vo_cache = t2.run_vggt_on_frames(model_vggt, pose_fn, frames_t, args.device)
+        if args.depth_source == "vggt":
+            for i, f in enumerate(frames_t):
+                d = torch.from_numpy(vggt_vo_cache[i]["depth_vggt"]).float().to(args.device).clamp_min(1e-3)
+                f["depth_lr"] = d.unsqueeze(0)
 
     depth_b, rgb_b, sr_b = _stack_views(frames_t, args.device)
     use_sr = sr_b is not None and not args.force_no_sr_prior
@@ -289,6 +298,64 @@ def main():
         else:
             print("[oracle] no overlaps with oracle depth; check oracle_dir stems")
 
+    if (
+        args.eval_vggt_upsampled_baseline
+        and args.oracle_dir
+        and vggt_vo_cache is not None
+    ):
+        import csv
 
-if __name__ == "__main__":
+        import torch.nn.functional as F
+
+        from task02_vggt_geometry import load_oracle_depth
+        from utils.metrics import compute_all_depth_metrics
+
+        import statistics as stats
+
+        ora = str(Path(args.oracle_dir).expanduser().resolve())
+        bros: List[dict] = []
+        for vi in range(v):
+            name = frames_t[vi]["name"]
+            vd = torch.from_numpy(vggt_vo_cache[vi]["depth_vggt"].astype(np.float32)).clamp_min(1e-6)
+            pred = (
+                F.interpolate(
+                    vd.unsqueeze(0).unsqueeze(0),
+                    size=(SR_SIZE, SR_SIZE),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                .squeeze()
+                .numpy()
+            )
+            gd = load_oracle_depth(ora, name)
+            if gd is None:
+                continue
+            if gd.ndim != 2:
+                gd = np.squeeze(gd)
+            gt_t = torch.from_numpy(gd.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+            gt = (
+                F.interpolate(gt_t, size=(SR_SIZE, SR_SIZE), mode="bilinear", align_corners=False)
+                .squeeze()
+                .numpy()
+            )
+            m = gt > 1e-6
+            metric = compute_all_depth_metrics(pred, gt, mask=m)
+            metric["frame"] = name
+            bros.append(metric)
+        if bros:
+            bp = out_dir / "depth_metrics_vggt_upsampled_vs_oracle.csv"
+            keys = sorted(bros[0].keys())
+            with open(bp, "w", newline="", encoding="utf-8") as fp:
+                w = csv.DictWriter(fp, fieldnames=keys)
+                w.writeheader()
+                for r in bros:
+                    w.writerow(r)
+            ar_b = stats.mean(float(r["abs_rel"]) for r in bros if not np.isnan(r["abs_rel"]))
+            si_b = stats.mean(float(r["scale_inv_l1"]) for r in bros if not np.isnan(r["scale_inv_l1"]))
+            print(
+                f"[baseline] VGGT depth → HR bilinear vs oracle (same protocol as HR Head): "
+                f"mean AbsRel={ar_b:.4f}  ScaleInvL1={si_b:.4f} → {bp}"
+            )
+        else:
+            print("[baseline] no VGGT-vs-oracle rows (oracle missing?).")
     main()
