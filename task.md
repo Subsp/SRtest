@@ -117,11 +117,11 @@
   - 数据：Mip-NeRF360 5 场景（garden, kitchen, bonsai, room, counter）
   - 流程：images_8 → SwinIR → 跨视角 warp → edge-weighted PSNR / SSIM
   - 阈值：PSNR > 28 = 可忽略；22–28 = 中度（confidence weighting 即可）；< 22 = 严重（必做 VC-SR module）
-- [ ] **0.2** VGGT 在 200×200 LR 几何 fidelity 测试（1 天）
+- [ ] **0.2** VGGT 在  LR 几何 fidelity 测试（1 天）
   - 数据：同上 5 场景
   - 流程：frozen VGGT → depth；vanilla GOF (HR full, 30k iter) → oracle depth；对比 scale-invariant L1, AbsRel
   - 阈值：AbsRel < 0.10 直接可用；0.10–0.20 需 HR Head 强化；> 0.20 需 LoRA fine-tune VGGT
-- [ ] **0.4** 输出 1 页 risk memo，决策矩阵触发后续路径
+- [x] **0.4** 输出 1 页 risk memo，决策矩阵触发后续路径（见 `experiments/RISK_MEMO_PHASE0.md`）
 
 ### Phase 1：基础设施（1 周）
 
