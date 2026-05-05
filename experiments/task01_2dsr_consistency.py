@@ -18,7 +18,8 @@ Pipeline (per scene, 8 frames):
   1. 加载 SR 图（模式 A：从磁盘；模式 B：SwinIR 推理）
   2. 从 images_8 加载 COLMAP 相机参数和稀疏深度（仅用于 warp，不做 SR）
   3. 对每对帧 (i, j)：
-       - 把深度图从 200×200 上采到 800×800
+       - 准备 **warp 用深度**：默认 COLMAP/MiDaS 的 LR 深度双线性上采到 SR；或
+         ``--depth_mode hr_head --depth_hr_dir`` 读取 ``task22`` 导出的 ``*_depth_hr.npy``
        - Backward-warp I_sr^{v_j} 到 v_i 视角
        - 计算 PSNR/SSIM（全局 + Sobel 边缘区域）
   4. 汇总统计，输出决策结论
@@ -35,10 +36,24 @@ Usage:
       --sr_dir    /path/to/sr_images \
       --output_dir ./results/task01
 
-  # 模式 B（实时 SwinIR）：
+  # StableSR cache 在与 images_8 平行的 priors/ 下时：
+  #   --sr_dir 与 --data_root 相同（场景的父目录），并加 --sr_subdir priors
   python task01_2dsr_consistency.py \
-      --data_root /path/to/mipnerf360 \
+      --data_root /root/autodl-tmp \
+      --sr_dir /root/autodl-tmp \
+      --sr_subdir priors \
+      --scenes kitchen \
       --output_dir ./results/task01
+
+  # Phase 2.2 接上 HR Head（先 ``task22`` / ``train`` 导出 ``<scene>_depth_hr.npy``）再看跨视角一致性：
+  python task01_2dsr_consistency.py \
+      --data_root /path/to/parent/with/kitchen \
+      --sr_dir /path/to/kitchen-or-priors \
+      --sr_subdir priors \
+      --depth_mode hr_head \
+      --depth_hr_dir /path/to/results/task22_.../
+      --scenes kitchen \
+      --output_dir ./results/task01_hrprior
 """
 
 import argparse
@@ -48,9 +63,11 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import pandas as pd
 from tqdm import tqdm
 
@@ -63,6 +80,54 @@ from configs import (
 from utils.dataset import load_scene_frames, frames_to_tensors
 from utils.metrics import compute_all_image_metrics, sobel_edge_mask
 from utils.warp import backward_warp, upsample_depth
+
+
+def populate_depth_sr_warp_for_warp(
+    frames_t: list,
+    sr_images: list,
+    depth_mode: str,
+    depth_hr_dir: Optional[str],
+) -> None:
+    """
+    为每个视图写入 ``fi[\"depth_sr_warp\"]`` (H_sr,W_sr)，供 ``warp_and_compare`` 作 depth_tgt。
+
+    * ``colmap`` / ``midas``: depth_lr 双线性上至 SR。
+    * ``hr_head``: ``depth_hr_dir/{name}_depth_hr.npy``（task22 导出同名）。
+    """
+    _, H_sr, W_sr = sr_images[0].shape
+    dm = depth_mode.strip().lower()
+    if dm in ("colmap", "midas"):
+        for fi in frames_t:
+            fi["depth_sr_warp"] = upsample_depth(
+                fi["depth_lr"], target_hw=(H_sr, W_sr),
+            ).to(dtype=torch.float32)
+        return
+    if dm == "hr_head":
+        if not depth_hr_dir:
+            raise ValueError("--depth_mode hr_head 时必须提供 --depth_hr_dir")
+        droot = Path(depth_hr_dir).expanduser().resolve()
+        if not droot.is_dir():
+            raise FileNotFoundError(f"depth_hr_dir 不是目录: {droot}")
+        for fi in frames_t:
+            npy = droot / f"{fi['name']}_depth_hr.npy"
+            if not npy.is_file():
+                raise FileNotFoundError(f"缺少 HR Head 深度: {npy}")
+            arr = np.load(str(npy)).astype(np.float32)
+            t = torch.from_numpy(arr).to(dtype=torch.float32)
+            while t.dim() > 2:
+                t = t.squeeze(0)
+            if t.dim() != 2:
+                raise ValueError(f"{npy}: squeeze 后期望 H×W，实际 {tuple(t.shape)}")
+            if tuple(int(x) for x in t.shape) != (int(H_sr), int(W_sr)):
+                t = F.interpolate(
+                    t.unsqueeze(0).unsqueeze(0),
+                    size=(H_sr, W_sr),
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0).squeeze(0)
+            fi["depth_sr_warp"] = t.cpu()
+        return
+    raise ValueError(f"Unknown depth_mode: {depth_mode}")
 
 
 # ── SR loading helpers ────────────────────────────────────────────────────────
@@ -150,7 +215,7 @@ def warp_and_compare(
 ) -> list:
     """
     For all ordered pairs (i, j):
-      - Upsample depth of view i to SR resolution
+      - 使用预先写入的 ``frames_t[*][\"depth_sr_warp\"]``（COLMAP／MiDaS 上采样或 HR Head npy）
       - Backward-warp sr_images[j] into view i
       - Compute metrics vs sr_images[i]
 
@@ -183,10 +248,7 @@ def warp_and_compare(
         K_sr_i = K_sr_list[idx_i]
         K_sr_j = K_sr_list[idx_j]
 
-        # Upsample COLMAP sparse depth of view i from LR → actual SR resolution
-        depth_sr_i = upsample_depth(
-            fi["depth_lr"], target_hw=(H_sr, W_sr)
-        ).to(device)
+        depth_sr_i = fi["depth_sr_warp"].to(device=device)
 
         # Backward-warp srj into view i's perspective
         # Camera params are defined at LR resolution; we need them at SR resolution
@@ -240,8 +302,12 @@ def parse_args():
                    help="MipNeRF360 根目录（提供 COLMAP 相机 + 稀疏深度）")
     p.add_argument("--sr_dir",      default=None,
                    help="预计算 SR 图根目录（模式 A）。\n"
-                        "结构：<sr_dir>/<scene>/<frame>.png\n"
+                        "默认结构：<sr_dir>/<scene>/<frame>.png\n"
+                        "若 SR 在子目录（如 priors），用 --sr_subdir。\n"
                         "不传则实时运行 SwinIR（模式 B）。")
+    p.add_argument("--sr_subdir",   default="",
+                   help="SR 相对于 <sr_dir>/<scene>/ 的子目录。"
+                        "例：StableSR cache 放在 kitchen/priors/ 时设为 priors")
     p.add_argument("--output_dir",  default="./results/task01")
     p.add_argument("--scenes",      nargs="+", default=SCENES_PHASE0)
     p.add_argument("--n_frames",    type=int, default=FRAMES_PER_SCENE)
@@ -250,8 +316,11 @@ def parse_args():
     p.add_argument("--sr_size",     type=int, default=SR_SIZE,
                    help="SR 图分辨率（默认 800）")
     p.add_argument("--depth_mode",  default="midas",
-                   choices=["colmap", "midas"],
-                   help="深度来源：midas（默认，稠密单目）或 colmap（COLMAP 稀疏插值）")
+                   choices=["colmap", "midas", "hr_head"],
+                   help="Warp 几何深度：colmap / midas=LR 深度双线性上至 SR；"
+                        "hr_head=读 task22 导出的 *_depth_hr.npy（需 --depth_hr_dir）。")
+    p.add_argument("--depth_hr_dir", default=None,
+                   help="仅 depth_mode=hr_head：含各视角 <stem>_depth_hr.npy 的目录（与 SR 对齐分辨率）。")
     p.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--save_visuals",action="store_true",
@@ -280,7 +349,11 @@ def main():
     print(f" Scenes   : {args.scenes}")
     print(f" Frames   : {args.n_frames} per scene")
     print(f" SR size  : {args.sr_size}×{args.sr_size}")
-    print(f" SR 来源  : {'预计算目录  ' + args.sr_dir if args.sr_dir else '实时 SwinIR ×4'}")
+    sr_desc = "实时 SwinIR ×4"
+    if args.sr_dir:
+        sub = f"/{args.sr_subdir}" if args.sr_subdir else ""
+        sr_desc = f"预计算  {args.sr_dir}/<scene>{sub}/"
+    print(f" SR 来源  : {sr_desc}")
     print(f" 深度来源 : {args.depth_mode}")
     print(f" Device   : {device}")
     print()
@@ -318,6 +391,8 @@ def main():
         t1 = time.time()
         if args.sr_dir:
             sr_scene_dir = os.path.join(args.sr_dir, scene)
+            if args.sr_subdir:
+                sr_scene_dir = os.path.join(sr_scene_dir, args.sr_subdir)
             print(f"  Loading SR images from {sr_scene_dir} …")
             try:
                 sr_images = load_sr_from_dir(
@@ -342,7 +417,15 @@ def main():
                 f["depth_lr"] = d
             print(f"  MiDaS done in {time.time()-t_midas:.1f}s")
 
-        # ── warp + metrics ─────────────────────────────────────────────────────
+        try:
+            populate_depth_sr_warp_for_warp(
+                frames_t, sr_images, args.depth_mode, args.depth_hr_dir,
+            )
+        except Exception as e:
+            print(f"  [ERROR] populate depth_sr_warp: {e}")
+            continue
+        if args.depth_mode == "hr_head":
+            print(f"  depth_sr_warp: HR Head npy ← {args.depth_hr_dir}")
         print(f"  Warping {len(frames_t)*(len(frames_t)-1)} pairs …")
         t2 = time.time()
         pair_results = warp_and_compare(sr_images, frames_t, device, sr_size=args.sr_size)
@@ -467,12 +550,10 @@ def _save_visual_comparison(scene, pair_results, frames_t, sr_images, vis_dir, d
         sri = sr_images[fi_idx].cpu().permute(1, 2, 0).numpy()
         srj = sr_images[fj_idx]
 
-        from utils.warp import upsample_depth, backward_warp
+        from utils.warp import backward_warp
         from utils.colmap_reader import scale_K as _scale_K
         _, H_sr_v, W_sr_v = sr_images[fi_idx].shape
-        depth_sr_i = upsample_depth(
-            frames_t[fi_idx]["depth_lr"], target_hw=(H_sr_v, W_sr_v)
-        ).to(device)
+        depth_sr_i = frames_t[fi_idx]["depth_sr_warp"].to(device=device, dtype=torch.float32)
         K_lr_i = frames_t[fi_idx]["K_lr"].cpu().numpy()
         K_lr_j = frames_t[fj_idx]["K_lr"].cpu().numpy()
         K_sr_vi = torch.from_numpy(_scale_K(K_lr_i, (LR_SIZE, LR_SIZE), (W_sr_v, H_sr_v))).float().to(device)
