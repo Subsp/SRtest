@@ -96,6 +96,17 @@ SP_SURFACE_RAMP_END_ITER=5000 \
 bash scripts/run_sp_ie_srgs_v0_kitchen.sh
 ```
 
+For faster surface diagnostics, cap densification growth:
+
+```bash
+RUN_NAME=sp_v0_qwen_routing_surface_cap700k \
+SP_SURFACE_ENABLE=1 \
+SP_MAX_POINTS=700000 \
+DENSIFY_UNTIL_ITER=5000 \
+CHECKPOINT_ITERATIONS="3000 5000" \
+bash scripts/run_sp_ie_srgs_v0_kitchen.sh
+```
+
 The no-densification-route ablation is explicit:
 
 ```bash

@@ -298,6 +298,7 @@ def training(
 
     viewpoint_stack = None
     ema_loss_for_log = 0.0
+    max_points_notice_shown = False
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="SP-IE-SRGS training")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
@@ -481,7 +482,21 @@ def training(
                 print(f"\n[ITER {iteration}] Saving Gaussians")
                 scene.save(iteration)
 
-            if iteration < opt.densify_until_iter and not bool(sp_args.sp_disable_densification_route):
+            current_points = int(gaussians.get_xyz.shape[0])
+            max_points = int(sp_args.sp_max_points)
+            densification_enabled = iteration < opt.densify_until_iter and not bool(
+                sp_args.sp_disable_densification_route
+            )
+            if densification_enabled and max_points > 0 and current_points >= max_points:
+                densification_enabled = False
+                if not max_points_notice_shown:
+                    print(
+                        f"\n[SP-IE-SRGS] point cap reached: {current_points} >= {max_points}; "
+                        "stopping densification."
+                    )
+                    max_points_notice_shown = True
+
+            if densification_enabled:
                 render_pkg = geo_holder.get("render_pkg", {})
                 visibility_filter = render_pkg.get("visibility_filter") if isinstance(render_pkg, dict) else None
                 radii = render_pkg.get("radii") if isinstance(render_pkg, dict) else None
@@ -615,6 +630,7 @@ def build_parser():
     parser.add_argument("--sp_fail_on_app_geometry_grad", action="store_true", default=True)
     parser.add_argument("--sp_audit_interval", type=int, default=100)
     parser.add_argument("--sp_disable_densification_route", action="store_true")
+    parser.add_argument("--sp_max_points", type=int, default=0)
     parser.add_argument("--sp_surface_enable", action="store_true")
     parser.add_argument("--sp_lambda_surface", type=float, default=0.0)
     parser.add_argument("--sp_lambda_distortion", type=float, default=1000.0)

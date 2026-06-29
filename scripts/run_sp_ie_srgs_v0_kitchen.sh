@@ -27,6 +27,7 @@ ITERATIONS="${ITERATIONS:-30000}"
 TEST_ITERATIONS="${TEST_ITERATIONS:-7000 30000}"
 SAVE_ITERATIONS="${SAVE_ITERATIONS:-7000 30000}"
 CHECKPOINT_ITERATIONS="${CHECKPOINT_ITERATIONS:-}"
+START_CHECKPOINT="${START_CHECKPOINT:-}"
 TRAIN_RESOLUTION="${TRAIN_RESOLUTION:-1}"
 TRAIN_PORT="${TRAIN_PORT:-6009}"
 LLFFHOLD="${LLFFHOLD:-8}"
@@ -37,6 +38,7 @@ SP_APP_LAMBDA_DSSIM="${SP_APP_LAMBDA_DSSIM:-0.0}"
 SP_APP_LR_WEIGHT="${SP_APP_LR_WEIGHT:-0.01}"
 SP_AUDIT_INTERVAL="${SP_AUDIT_INTERVAL:-100}"
 SP_DISABLE_DENSIFICATION_ROUTE="${SP_DISABLE_DENSIFICATION_ROUTE:-0}"
+SP_MAX_POINTS="${SP_MAX_POINTS:-700000}"
 
 SP_SURFACE_ENABLE="${SP_SURFACE_ENABLE:-0}"
 SP_LAMBDA_SURFACE="${SP_LAMBDA_SURFACE:-1.0}"
@@ -91,7 +93,7 @@ echo "[sp-ie-srgs-v0] prior     : ${PREPARED_SR_PRIOR_ROOT}/${SR_PRIOR_SUBDIR}"
 echo "[sp-ie-srgs-v0] masks     : ${PREPARED_SR_PRIOR_ROOT}/${SR_PRIOR_MASK_SUBDIR}"
 echo "[sp-ie-srgs-v0] output    : ${MODEL_DIR}"
 echo "[sp-ie-srgs-v0] surface   : enable=${SP_SURFACE_ENABLE} lambda=${SP_LAMBDA_SURFACE} ramp=${SP_SURFACE_RAMP_START_ITER}-${SP_SURFACE_RAMP_END_ITER}"
-echo "[sp-ie-srgs-v0] densify   : disable_route=${SP_DISABLE_DENSIFICATION_ROUTE}"
+echo "[sp-ie-srgs-v0] densify   : disable_route=${SP_DISABLE_DENSIFICATION_ROUTE} max_points=${SP_MAX_POINTS}"
 
 mkdir -p "${MODEL_DIR}"
 "${PYTHON_BIN}" "${REPO_ROOT}/scripts/sp_ie_srgs_preflight.py" "${PREFLIGHT_ARGS[@]}"
@@ -114,6 +116,7 @@ TRAIN_ARGS=(
   --sp_app_lambda_dssim "${SP_APP_LAMBDA_DSSIM}"
   --sp_app_lr_weight "${SP_APP_LR_WEIGHT}"
   --sp_audit_interval "${SP_AUDIT_INTERVAL}"
+  --sp_max_points "${SP_MAX_POINTS}"
   --sp_lambda_surface "${SP_LAMBDA_SURFACE}"
   --sp_lambda_distortion "${SP_LAMBDA_DISTORTION}"
   --sp_lambda_depth_normal "${SP_LAMBDA_DEPTH_NORMAL}"
@@ -135,6 +138,9 @@ TRAIN_ARGS=(
 )
 if [[ "${#CKPT_ITER_ARRAY[@]}" -gt 0 ]]; then
   TRAIN_ARGS+=(--checkpoint_iterations "${CKPT_ITER_ARRAY[@]}")
+fi
+if [[ -n "${START_CHECKPOINT}" ]]; then
+  TRAIN_ARGS+=(--start_checkpoint "${START_CHECKPOINT}")
 fi
 if [[ "${REQUIRE_PRIOR_MASK}" == "1" ]]; then
   TRAIN_ARGS+=(--sp_require_prior_mask)
