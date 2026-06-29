@@ -55,7 +55,7 @@ Clone or update the repo on the server:
 
 ```bash
 cd /root/autodl-tmp
-git clone git@github.com:Subsp/SP-IE-SRGS.git SP-IE-SRGS
+git clone git@github.com:Subsp/SRtest.git SP-IE-SRGS
 cd /root/autodl-tmp/SP-IE-SRGS
 git checkout codex/sp-ie-srgs-v0
 ```
@@ -75,6 +75,9 @@ Run the server gate before training:
 cd /root/autodl-tmp/SP-IE-SRGS
 bash scripts/check_sp_ie_srgs_server_env.sh
 ```
+
+This uses `Subsp/SRtest` as a temporary carrier repo until a dedicated
+`Subsp/SP-IE-SRGS` repo exists.
 
 ## Surface Variant
 
