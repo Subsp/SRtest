@@ -49,6 +49,33 @@ The preflight uses the same LLFF train split as `--eval` by default, so a
 `train244` prior is checked against train views rather than all `images_2`
 frames.
 
+## Sync And Check
+
+Clone or update the repo on the server:
+
+```bash
+cd /root/autodl-tmp
+git clone git@github.com:Subsp/SP-IE-SRGS.git SP-IE-SRGS
+cd /root/autodl-tmp/SP-IE-SRGS
+git checkout codex/sp-ie-srgs-v0
+```
+
+For an existing checkout:
+
+```bash
+cd /root/autodl-tmp/SP-IE-SRGS
+git fetch origin codex/sp-ie-srgs-v0
+git checkout codex/sp-ie-srgs-v0
+git pull --ff-only origin codex/sp-ie-srgs-v0
+```
+
+Run the server gate before training:
+
+```bash
+cd /root/autodl-tmp/SP-IE-SRGS
+bash scripts/check_sp_ie_srgs_server_env.sh
+```
+
 ## Surface Variant
 
 Run this only after `sp_routing_only` smoke is healthy:
