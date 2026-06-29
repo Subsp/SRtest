@@ -1,0 +1,211 @@
+{
+  "schema_version": "perf-checker-v0",
+  "workspace_root": "..",
+  "run_root": "../benchmark_runs",
+  "output_root": "results",
+    "source_roots": {
+      "ie_srgs": "{workspace_root}/SP-IE-SRGS",
+      "mip_splatting": "{workspace_root}/mip-splatting",
+      "gs2mesh": "{workspace_root}/gs2mesh",
+      "sugar": "{workspace_root}/research_external/SuGaR",
+    "gof": "{workspace_root}/research_external/gaussian-opacity-fields",
+    "two_dgs": "{workspace_root}/research_external/2d-gaussian-splatting",
+    "two_d_sugar_latest": "{workspace_root}/research_external/2d-sugar"
+  },
+  "default_artifacts": {
+    "scene_run_dir": "{run_root}/{method_id}/{dataset_id}/{scene_id}",
+    "renders_dir": "{scene_run_dir}/renders",
+    "gt_dir": "{scene_run_dir}/gt",
+    "mesh_path": "{scene_run_dir}/mesh/mesh.ply",
+    "render_metrics_path": "{scene_run_dir}/metrics/render_metrics.json",
+    "geometry_metrics_path": "{scene_run_dir}/metrics/results.json",
+    "manifest_path": "{scene_run_dir}/manifest.json"
+  },
+  "scene_sets": {
+    "single_scene": {
+      "dtu_core": ["scan24"]
+    },
+    "smoke": {
+      "dtu_core": ["scan24"],
+      "tnt_core": ["truck"],
+      "mipnerf360_render": ["kitchen"],
+      "deepblending_render": ["playroom"]
+    },
+    "geometry_core": {
+      "dtu_core": ["scan24", "scan37", "scan40", "scan55", "scan63", "scan65", "scan69", "scan83", "scan97", "scan105", "scan106", "scan110", "scan114", "scan118", "scan122"],
+      "tnt_core": ["truck", "train"]
+    },
+    "render_core": {
+      "mipnerf360_render": ["bicycle", "flowers", "garden", "stump", "treehill", "room", "counter", "kitchen", "bonsai"],
+      "deepblending_render": ["drjohnson", "playroom"]
+    },
+    "all": {
+      "dtu_core": ["scan24", "scan37", "scan40", "scan55", "scan63", "scan65", "scan69", "scan83", "scan97", "scan105", "scan106", "scan110", "scan114", "scan118", "scan122"],
+      "tnt_core": ["truck", "train"],
+      "mipnerf360_render": ["bicycle", "flowers", "garden", "stump", "treehill", "room", "counter", "kitchen", "bonsai"],
+      "deepblending_render": ["drjohnson", "playroom"]
+    }
+  },
+  "datasets": [
+    {
+      "id": "dtu_core",
+      "label": "DTU geometry and rendering core",
+      "role": "geometry_render",
+      "root": "${DTU_ROOT}",
+      "official_eval_root": "${DTU_OFFICIAL_ROOT}",
+      "geometry_protocol": "dtu_chamfer",
+      "render_protocol": "heldout_rgb",
+      "notes": "Use official DTU culling and STL ground truth. Units follow eval_DTU.py.",
+      "scenes": [
+        {"id": "scan24", "scan_id": 24, "relative_path": "scan24"},
+        {"id": "scan37", "scan_id": 37, "relative_path": "scan37"},
+        {"id": "scan40", "scan_id": 40, "relative_path": "scan40"},
+        {"id": "scan55", "scan_id": 55, "relative_path": "scan55"},
+        {"id": "scan63", "scan_id": 63, "relative_path": "scan63"},
+        {"id": "scan65", "scan_id": 65, "relative_path": "scan65"},
+        {"id": "scan69", "scan_id": 69, "relative_path": "scan69"},
+        {"id": "scan83", "scan_id": 83, "relative_path": "scan83"},
+        {"id": "scan97", "scan_id": 97, "relative_path": "scan97"},
+        {"id": "scan105", "scan_id": 105, "relative_path": "scan105"},
+        {"id": "scan106", "scan_id": 106, "relative_path": "scan106"},
+        {"id": "scan110", "scan_id": 110, "relative_path": "scan110"},
+        {"id": "scan114", "scan_id": 114, "relative_path": "scan114"},
+        {"id": "scan118", "scan_id": 118, "relative_path": "scan118"},
+        {"id": "scan122", "scan_id": 122, "relative_path": "scan122"}
+      ]
+    },
+    {
+      "id": "tnt_core",
+      "label": "Tanks and Temples real-scene geometry supplement",
+      "role": "geometry_render",
+      "root": "${TNT_ROOT}",
+      "geometry_protocol": "tnt_fscore",
+      "render_protocol": "heldout_rgb",
+      "notes": "Truck and Train match the existing HRNVS plan and common 3DGS rendering split.",
+      "scenes": [
+        {"id": "truck", "scan_id": "Truck", "relative_path": "Truck"},
+        {"id": "train", "scan_id": "Train", "relative_path": "Train"}
+      ]
+    },
+    {
+      "id": "mipnerf360_render",
+      "label": "Mip-NeRF 360 rendering main table",
+      "role": "render_only",
+      "root": "${MIPNERF360_ROOT}",
+      "geometry_protocol": "none",
+      "render_protocol": "mipnerf360_3dgs",
+      "notes": "Do not report Chamfer on these scenes unless an external geometry ground truth is added.",
+      "scenes": [
+        {"id": "bicycle", "relative_path": "bicycle"},
+        {"id": "flowers", "relative_path": "flowers"},
+        {"id": "garden", "relative_path": "garden"},
+        {"id": "stump", "relative_path": "stump"},
+        {"id": "treehill", "relative_path": "treehill"},
+        {"id": "room", "relative_path": "room"},
+        {"id": "counter", "relative_path": "counter"},
+        {"id": "kitchen", "relative_path": "kitchen"},
+        {"id": "bonsai", "relative_path": "bonsai"}
+      ]
+    },
+    {
+      "id": "deepblending_render",
+      "label": "Deep Blending rendering supplement",
+      "role": "render_only",
+      "root": "${DEEPBLENDING_ROOT}",
+      "geometry_protocol": "none",
+      "render_protocol": "3dgs_deep_blending",
+      "scenes": [
+        {"id": "drjohnson", "relative_path": "drjohnson"},
+        {"id": "playroom", "relative_path": "playroom"}
+      ]
+    }
+  ],
+  "methods": [
+    {
+      "id": "ie_srgs",
+      "label": "SP-IE-SRGS v0 reproduction",
+      "family": "ours",
+      "enabled": true,
+      "repo_key": "ie_srgs",
+      "eval": {"render": true, "geometry": true},
+      "commands": {
+        "train": "cd {repo} && python train_sp_ie_srgs.py -s {scene_root} -m {scene_run_dir}",
+        "render": "cd {repo} && python render.py -m {scene_run_dir}",
+        "fuse_or_mesh": "cd {repo} && python create_fused_ply.py -m {scene_run_dir} --output_ply {mesh_path}"
+      }
+    },
+    {
+      "id": "mip_splatting",
+      "label": "Mip-Splatting",
+      "family": "baseline_render",
+      "enabled": true,
+      "repo_key": "mip_splatting",
+      "eval": {"render": true, "geometry": true},
+      "commands": {
+        "train": "cd {repo} && python train.py -s {scene_root} -m {scene_run_dir}",
+        "render": "cd {repo} && python render.py -m {scene_run_dir}",
+        "fuse_or_mesh": "cd {repo} && python create_fused_ply.py -m {scene_run_dir} --output_ply {mesh_path}"
+      }
+    },
+    {
+      "id": "gs2mesh",
+      "label": "GS2Mesh",
+      "family": "mesh_extraction",
+      "enabled": true,
+      "repo_key": "gs2mesh",
+      "eval": {"render": false, "geometry": true},
+      "commands": {
+        "mesh": "cd {repo} && python <gs2mesh_entry>.py --source {scene_root} --output {mesh_path}"
+      }
+    },
+    {
+      "id": "sugar",
+      "label": "SuGaR",
+      "family": "surface_gaussian",
+      "enabled": false,
+      "repo_key": "sugar",
+      "eval": {"render": true, "geometry": true},
+      "notes": "Enable after cloning and pinning the official repo commit."
+    },
+    {
+      "id": "gof",
+      "label": "Gaussian Opacity Fields",
+      "family": "surface_gaussian",
+      "enabled": false,
+      "repo_key": "gof",
+      "eval": {"render": true, "geometry": true},
+      "notes": "Recommended surface reconstruction baseline for unbounded scenes."
+    },
+    {
+      "id": "two_dgs",
+      "label": "2D Gaussian Splatting",
+      "family": "surface_gaussian",
+      "enabled": false,
+      "repo_key": "two_dgs",
+      "eval": {"render": true, "geometry": true},
+      "notes": "Enable after pinning code and DTU/TNT evaluation settings."
+    },
+    {
+      "id": "two_d_sugar_latest",
+      "label": "2D-SuGaR latest candidate",
+      "family": "surface_gaussian_latest",
+      "enabled": false,
+      "repo_key": "two_d_sugar_latest",
+      "eval": {"render": true, "geometry": true},
+      "notes": "Track as latest SuGaR-like candidate. Keep disabled until code/license/environment are reproducible."
+    }
+  ],
+  "geometry_eval_commands": {
+    "dtu_chamfer": "python {workspace_root}/performance_checker/geometry_metrics.py --pred {mesh_path} --gt {official_eval_root}/Points/stl/stl{scan_id_padded}_total.ply --output {geometry_metrics_path} --sample-points 200000 --max-points 200000",
+    "tnt_fscore": "python {workspace_root}/performance_checker/geometry_metrics.py --pred {mesh_path} --gt {scene_root}/{scan_id}.ply --output {geometry_metrics_path} --sample-points 300000 --max-points 300000 --threshold 0.01"
+  },
+  "references": [
+    "https://niujinshuchong.github.io/mip-splatting/",
+    "https://niujinshuchong.github.io/gaussian-opacity-fields/",
+    "https://jonbarron.info/mipnerf360/",
+    "https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/",
+    "https://www.tanksandtemples.org/",
+    "https://roboimagedata.compute.dtu.dk/",
+    "https://arxiv.org/abs/2605.00569"
+  ]
+}
