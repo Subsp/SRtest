@@ -125,15 +125,37 @@ python performance_checker/checker.py collect \
   --scene-set single_scene
 ```
 
-Sync only the checker files to a remote machine:
+Sync through the GitHub repository.
+
+On the local machine, push local commits:
 
 ```bash
-REMOTE=user@server REMOTE_DIR=/path/to/SRtest \
-  bash performance_checker/sync_single_scene_checker.sh
+cd /Users/ltl/Desktop/VGGTSR
+git push origin main
 ```
 
-This sync script only copies `performance_checker/`; it does not read from or
-write to any other repository.
+On the server, fast-forward an existing checkout:
+
+```bash
+cd /path/to/SRtest
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
+```
+
+If the server does not have the checkout yet, use the first clone directly:
+
+```bash
+git clone git@github.com:Subsp/SRtest.git /path/to/SRtest
+cd /path/to/SRtest
+bash performance_checker/sync_single_scene_checker.sh
+```
+
+After the first clone, future syncs can also use:
+
+```bash
+CHECKOUT_DIR=/path/to/SRtest bash /path/to/SRtest/performance_checker/sync_single_scene_checker.sh
+```
 
 ## Run Discipline
 

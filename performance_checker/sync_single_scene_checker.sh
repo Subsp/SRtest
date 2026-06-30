@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REMOTE="${REMOTE:?Set REMOTE to user@host or host alias}"
-REMOTE_DIR="${REMOTE_DIR:?Set REMOTE_DIR to the remote SRtest checkout path}"
-RSYNC_BIN="${RSYNC_BIN:-rsync}"
+REPO_URL="${REPO_URL:-git@github.com:Subsp/SRtest.git}"
+BRANCH="${BRANCH:-main}"
+CHECKOUT_DIR="${CHECKOUT_DIR:-$PWD/SRtest}"
 
-RSYNC_FLAGS=(-av --delete)
-if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  RSYNC_FLAGS+=(--dry-run)
+if [[ -d "${CHECKOUT_DIR}/.git" ]]; then
+  cd "${CHECKOUT_DIR}"
+  git fetch origin "${BRANCH}"
+  git checkout "${BRANCH}"
+  git pull --ff-only origin "${BRANCH}"
+else
+  mkdir -p "$(dirname "${CHECKOUT_DIR}")"
+  git clone --branch "${BRANCH}" "${REPO_URL}" "${CHECKOUT_DIR}"
+  cd "${CHECKOUT_DIR}"
 fi
 
-"${RSYNC_BIN}" "${RSYNC_FLAGS[@]}" \
-  "${ROOT_DIR}/performance_checker/" \
-  "${REMOTE}:${REMOTE_DIR%/}/performance_checker/"
-
-echo "Synced performance_checker/ to ${REMOTE}:${REMOTE_DIR%/}/performance_checker/"
+echo "Synced ${REPO_URL} ${BRANCH} into ${CHECKOUT_DIR}"
+python3 performance_checker/checker.py plan --commands
