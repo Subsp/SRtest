@@ -96,7 +96,14 @@ Geometry:
 
 - DTU: use the self-contained `performance_checker/geometry_metrics.py` script
   against `DTU_OFFICIAL_ROOT/Points/stl/stl024_total.ply` for the single-scene
-  run. It writes `accuracy`, `completion`, and `chamfer_l1`.
+  run. For 3DGS/COLMAP-style DTU assets, pass
+  `--pred-transform dtu-colmap-to-world --dtu-cameras <scan>/cameras.npz` so the
+  exported Gaussian point cloud is first mapped back to DTU world coordinates.
+  It writes `accuracy`, `completion`, `chamfer_l1`, transform metadata, and
+  bounding-box diagnostics.
+- The lightweight DTU script is intended for fast same-scene triage. For a
+  paper-grade DTU number, run the official DTU visibility/mask culling protocol
+  before the final Chamfer calculation.
 - Tanks and Temples: use the same self-contained geometry script if expanding
   beyond the single-scene DTU run. For formal T&T leaderboard-equivalent
   numbers, pin and document the official T&T toolbox separately.

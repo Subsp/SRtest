@@ -21,6 +21,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-points", type=int, default=200000, help="Mesh sample count when Open3D is available.")
     parser.add_argument("--max-points", type=int, default=200000, help="Randomly cap each cloud to this many points.")
     parser.add_argument("--threshold", type=float, default=None, help="Optional F-score distance threshold.")
+    parser.add_argument(
+        "--pred-transform",
+        choices=("none", "dtu-colmap-to-world", "dtu-normalized-to-world"),
+        default="none",
+        help="Optional transform applied to predicted points before evaluation.",
+    )
+    parser.add_argument(
+        "--dtu-cameras",
+        type=Path,
+        default=None,
+        help="DTU cameras.npz used by dtu-* prediction transforms.",
+    )
+    parser.add_argument(
+        "--crop-pred-to-gt-bbox-margin",
+        type=float,
+        default=None,
+        help="Optional diagnostic crop: keep predicted points inside GT bbox plus this margin.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 
@@ -149,6 +167,77 @@ def cap_points(points: np.ndarray, max_points: int, rng: np.random.Generator) ->
     return points[idx]
 
 
+def bbox_stats(points: np.ndarray) -> dict[str, Any]:
+    if len(points) == 0:
+        return {
+            "min": None,
+            "max": None,
+            "center": None,
+            "extent": None,
+            "diag": None,
+        }
+    minimum = points.min(axis=0)
+    maximum = points.max(axis=0)
+    extent = maximum - minimum
+    return {
+        "min": minimum.tolist(),
+        "max": maximum.tolist(),
+        "center": ((minimum + maximum) / 2.0).tolist(),
+        "extent": extent.tolist(),
+        "diag": float(np.linalg.norm(extent)),
+    }
+
+
+def load_dtu_scale_transform(cameras_path: Path | None) -> tuple[float, np.ndarray]:
+    if cameras_path is None:
+        raise ValueError("--dtu-cameras is required for DTU prediction transforms")
+    data = np.load(cameras_path.expanduser().resolve())
+    if "scale_mat_0" not in data:
+        raise ValueError(f"DTU cameras file has no scale_mat_0: {cameras_path}")
+    scale_mat = np.asarray(data["scale_mat_0"], dtype=np.float64)
+    diagonal = np.diag(scale_mat[:3, :3])
+    if not np.allclose(diagonal, diagonal[0], rtol=1e-5, atol=1e-7):
+        raise ValueError(f"DTU scale_mat_0 is not isotropic: {diagonal.tolist()}")
+    return float(diagonal[0]), scale_mat[:3, 3].astype(np.float64)
+
+
+def transform_pred_points(
+    points: np.ndarray,
+    transform: str,
+    dtu_cameras: Path | None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    if transform == "none":
+        return points, {"type": "none"}
+    if transform in {"dtu-colmap-to-world", "dtu-normalized-to-world"}:
+        scale, translation = load_dtu_scale_transform(dtu_cameras)
+        return points * scale + translation[None, :], {
+            "type": transform,
+            "scale": scale,
+            "translation": translation.tolist(),
+            "dtu_cameras": str(dtu_cameras.expanduser().resolve()) if dtu_cameras is not None else None,
+        }
+    raise ValueError(f"Unsupported prediction transform: {transform}")
+
+
+def crop_pred_to_gt_bbox(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    margin: float | None,
+) -> tuple[np.ndarray, dict[str, Any] | None]:
+    if margin is None:
+        return pred, None
+    minimum = gt.min(axis=0) - float(margin)
+    maximum = gt.max(axis=0) + float(margin)
+    keep = np.logical_and(pred >= minimum[None, :], pred <= maximum[None, :]).all(axis=1)
+    cropped = pred[keep]
+    return cropped, {
+        "type": "gt_bbox",
+        "margin": float(margin),
+        "kept_points": int(len(cropped)),
+        "dropped_points": int(len(pred) - len(cropped)),
+    }
+
+
 def nearest_distances(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     try:
         from scipy.spatial import cKDTree
@@ -185,8 +274,15 @@ def safe_mean(values: np.ndarray) -> float:
 def main() -> int:
     args = parse_args()
     rng = np.random.default_rng(args.seed)
-    pred = cap_points(load_geometry(args.pred, args.sample_points), args.max_points, rng)
-    gt = cap_points(load_geometry(args.gt, args.sample_points), args.max_points, rng)
+    pred_raw = load_geometry(args.pred, args.sample_points)
+    gt_raw = load_geometry(args.gt, args.sample_points)
+    pred_transformed, pred_transform = transform_pred_points(pred_raw, args.pred_transform, args.dtu_cameras)
+    pred_cropped, crop = crop_pred_to_gt_bbox(pred_transformed, gt_raw, args.crop_pred_to_gt_bbox_margin)
+    pred = cap_points(pred_cropped, args.max_points, rng)
+    gt = cap_points(gt_raw, args.max_points, rng)
+
+    if len(pred) == 0:
+        raise ValueError("Prediction has zero points after transform/crop")
 
     pred_to_gt = nearest_distances(pred, gt)
     gt_to_pred = nearest_distances(gt, pred)
@@ -195,11 +291,22 @@ def main() -> int:
     chamfer_l1 = (accuracy + completion) / 2.0
 
     result: dict[str, Any] = {
-        "metric_version": "geometry-lightweight-v0",
+        "metric_version": "geometry-lightweight-v1",
         "pred": str(args.pred.expanduser().resolve()),
         "gt": str(args.gt.expanduser().resolve()),
         "pred_points": int(len(pred)),
         "gt_points": int(len(gt)),
+        "pred_points_raw": int(len(pred_raw)),
+        "gt_points_raw": int(len(gt_raw)),
+        "pred_transform": pred_transform,
+        "pred_crop": crop,
+        "bbox": {
+            "pred_raw": bbox_stats(pred_raw),
+            "pred_transformed": bbox_stats(pred_transformed),
+            "pred_evaluated": bbox_stats(pred),
+            "gt_raw": bbox_stats(gt_raw),
+            "gt_evaluated": bbox_stats(gt),
+        },
         "accuracy": accuracy,
         "completion": completion,
         "chamfer_l1": chamfer_l1,

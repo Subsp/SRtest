@@ -196,7 +196,7 @@
     }
   ],
   "geometry_eval_commands": {
-    "dtu_chamfer": "python {workspace_root}/performance_checker/geometry_metrics.py --pred {mesh_path} --gt {official_eval_root}/Points/stl/stl{scan_id_padded}_total.ply --output {geometry_metrics_path} --sample-points 200000 --max-points 200000",
+    "dtu_chamfer": "python {workspace_root}/performance_checker/geometry_metrics.py --pred {mesh_path} --gt {official_eval_root}/Points/stl/stl{scan_id_padded}_total.ply --output {geometry_metrics_path} --sample-points 200000 --max-points 200000 --pred-transform dtu-colmap-to-world --dtu-cameras {scene_root}/cameras.npz",
     "tnt_fscore": "python {workspace_root}/performance_checker/geometry_metrics.py --pred {mesh_path} --gt {scene_root}/{scan_id}.ply --output {geometry_metrics_path} --sample-points 300000 --max-points 300000 --threshold 0.01"
   },
   "references": [
