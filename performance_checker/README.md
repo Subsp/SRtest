@@ -162,6 +162,23 @@ The sync script defaults to the Git checkout that contains the script, so it
 will not create a nested `SRtest/SRtest` checkout when launched from inside the
 repo.
 
+Download the single-scene DTU assets directly from the internet:
+
+```bash
+cd /path/to/SRtest
+export DTU_ROOT=/data/dtu_3dgs
+export DTU_OFFICIAL_ROOT=/data/DTU
+bash performance_checker/download_dtu_scan24.sh
+python performance_checker/checker.py check-layout --require-data
+```
+
+The script streams `scan24` from the public 2DGS DTU archive and downloads the
+DTU evaluation ground truth from the public 2DGS Hugging Face dataset. It does
+not keep the 3.56 GB archive after extraction. If Hugging Face is blocked,
+use the script's printed fallback to extract `stl024_total.ply` from the
+official DTU `Points.zip`; this fallback needs temporary space for the 6.3 GB
+zip file.
+
 ## Run Discipline
 
 1. Pin every external method to a commit hash in `manifest.json`.
