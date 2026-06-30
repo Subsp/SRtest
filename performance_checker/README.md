@@ -168,18 +168,22 @@ Download the single-scene DTU assets directly from the internet:
 cd /path/to/SRtest
 export DTU_ROOT=/data/dtu_3dgs
 export DTU_OFFICIAL_ROOT=/data/DTU
-export HF_ENDPOINT=https://hf-mirror.com  # optional; use when huggingface.co is blocked
 bash performance_checker/download_dtu_scan24.sh
 python performance_checker/checker.py check-layout --require-data
 ```
 
-The script streams `scan24` from the public 2DGS DTU archive and downloads the
-DTU evaluation ground truth from the public 2DGS Hugging Face dataset. It does
-not keep the 3.56 GB archive after extraction. If Hugging Face is blocked, set
-`HF_ENDPOINT=https://hf-mirror.com`. If the mirror also fails for the ground
-truth STL, the script uses HTTP range requests to extract only
-`stl024_total.ply` from the official DTU `Points.zip` without keeping the full
-6.3 GB zip file.
+The script downloads `scan24` directly from the public 2DGS Google Drive folder
+and extracts `stl024_total.ply` directly from the official DTU `Points.zip`
+with HTTP range requests. Temporary downloaded archives or extraction folders
+are removed after `scan24` is installed, so the retained reusable assets are:
+
+```text
+/data/dtu_3dgs/scan24
+/data/DTU/Points/stl/stl024_total.ply
+```
+
+Override `GDRIVE_DTU_FOLDER_URL` or `POINTS_ZIP_URL` only if you need to pin a
+different mirror/source.
 
 For A100 servers, compile the Gaussian CUDA extensions with:
 

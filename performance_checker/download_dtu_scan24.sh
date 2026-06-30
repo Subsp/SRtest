@@ -4,11 +4,8 @@ set -euo pipefail
 DTU_ROOT="${DTU_ROOT:-/data/dtu_3dgs}"
 DTU_OFFICIAL_ROOT="${DTU_OFFICIAL_ROOT:-/data/DTU}"
 CACHE_DIR="${CACHE_DIR:-/data/_downloads/2dgs_dtu}"
-HF_DATASET="${HF_DATASET:-dylanebert/2DGS}"
-HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
-HF_ENDPOINT="${HF_ENDPOINT%/}"
-DTU_TAR_URL="${DTU_TAR_URL:-${HF_ENDPOINT}/datasets/dylanebert/2DGS/resolve/main/dtu.tar.gz}"
 POINTS_ZIP_URL="${POINTS_ZIP_URL:-https://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip}"
+GDRIVE_DTU_FOLDER_URL="${GDRIVE_DTU_FOLDER_URL:-https://drive.google.com/drive/folders/1SJFgt8qhQomHX55Q4xSvYE2C6-8tFll9}"
 
 mkdir -p "${DTU_ROOT}" "${DTU_OFFICIAL_ROOT}/Points/stl" "${CACHE_DIR}"
 
@@ -20,16 +17,10 @@ need_cmd() {
 }
 
 need_cmd python
-need_cmd curl
-need_cmd tar
-
-if ! python -c "import huggingface_hub" >/dev/null 2>&1; then
-  python -m pip install -U huggingface_hub
-fi
 
 download_official_stl_only() {
   local out_path="${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
-  echo "[dtu-scan24] trying official Points.zip range extraction"
+  echo "[dtu-scan24] extracting official DTU STL from ${POINTS_ZIP_URL}"
   if ! python -c "import remotezip" >/dev/null 2>&1; then
     python -m pip install -U remotezip
   fi
@@ -61,74 +52,132 @@ with RemoteZip(zip_url) as zf:
 PY
 }
 
+install_gdown_if_needed() {
+  if ! python -c "import gdown" >/dev/null 2>&1; then
+    python -m pip install -U "gdown>=5,<6"
+  fi
+}
+
+download_scan24_from_gdrive() {
+  local gdrive_dir="${CACHE_DIR}/gdrive_dtu"
+  echo "[dtu-scan24] downloading scan24 from Google Drive"
+  echo "[dtu-scan24] source=${GDRIVE_DTU_FOLDER_URL}"
+  install_gdown_if_needed
+  rm -rf "${gdrive_dir}.tmp"
+  mkdir -p "${gdrive_dir}.tmp"
+  python -m gdown --folder --remaining-ok "${GDRIVE_DTU_FOLDER_URL}" -O "${gdrive_dir}.tmp"
+  python - <<'PY' "${gdrive_dir}.tmp" "${DTU_ROOT}" "${CACHE_DIR}"
+import os
+import shutil
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+download_root = Path(sys.argv[1])
+dtu_root = Path(sys.argv[2])
+cache_dir = Path(sys.argv[3])
+dest = dtu_root / "scan24"
+
+
+def find_scan24(root: Path):
+    for path in root.rglob("scan24"):
+        if path.is_dir():
+            return path
+    return None
+
+
+def install_scan24(src: Path) -> None:
+    tmp = dtu_root / "scan24.tmp"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    dtu_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(tmp))
+    if dest.exists():
+        shutil.rmtree(dest)
+    tmp.replace(dest)
+    print(f"[dtu-scan24] installed {dest}")
+
+
+def safe_target(base: Path, member_name: str) -> Path:
+    target = (base / member_name).resolve()
+    base_resolved = base.resolve()
+    if base_resolved != target and base_resolved not in target.parents:
+        raise RuntimeError(f"unsafe archive member path: {member_name}")
+    return target
+
+
+scan_dir = find_scan24(download_root)
+if scan_dir is not None:
+    install_scan24(scan_dir)
+    raise SystemExit(0)
+
+archives = sorted(
+    path for path in download_root.rglob("*")
+    if path.is_file()
+    and (
+        path.name.endswith(".tar")
+        or path.name.endswith(".tar.gz")
+        or path.name.endswith(".tgz")
+        or path.name.endswith(".zip")
+    )
+)
+
+for archive in archives:
+    extract_root = cache_dir / f"scan24_extract_{archive.stem.replace('.', '_')}"
+    if extract_root.exists():
+        shutil.rmtree(extract_root)
+    extract_root.mkdir(parents=True, exist_ok=True)
+    print(f"[dtu-scan24] extracting scan24 from {archive}")
+
+    if archive.name.endswith((".tar", ".tar.gz", ".tgz")):
+        with tarfile.open(archive, "r:*") as tf:
+            members = [
+                member for member in tf.getmembers()
+                if "scan24" in Path(member.name).parts
+            ]
+            if not members:
+                shutil.rmtree(extract_root)
+                continue
+            for member in members:
+                safe_target(extract_root, member.name)
+            tf.extractall(extract_root, members=members)
+    else:
+        with zipfile.ZipFile(archive) as zf:
+            names = [
+                name for name in zf.namelist()
+                if "scan24" in Path(name).parts
+            ]
+            if not names:
+                shutil.rmtree(extract_root)
+                continue
+            for name in names:
+                safe_target(extract_root, name)
+            zf.extractall(extract_root, members=names)
+
+    scan_dir = find_scan24(extract_root)
+    if scan_dir is not None:
+        install_scan24(scan_dir)
+        shutil.rmtree(extract_root)
+        raise SystemExit(0)
+    shutil.rmtree(extract_root)
+
+raise SystemExit(f"could not locate scan24 in Google Drive download: {download_root}")
+PY
+  rm -rf "${gdrive_dir}" "${gdrive_dir}.tmp"
+}
+
 echo "[dtu-scan24] DTU_ROOT=${DTU_ROOT}"
 echo "[dtu-scan24] DTU_OFFICIAL_ROOT=${DTU_OFFICIAL_ROOT}"
 echo "[dtu-scan24] CACHE_DIR=${CACHE_DIR}"
-echo "[dtu-scan24] HF_ENDPOINT=${HF_ENDPOINT}"
+echo "[dtu-scan24] GDRIVE_DTU_FOLDER_URL=${GDRIVE_DTU_FOLDER_URL}"
 
 if [[ ! -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" ]]; then
-  echo "[dtu-scan24] downloading eval_dtu metadata/ground truth from ${HF_DATASET}"
-  set +e
-  python - <<'PY' "${HF_DATASET}" "${CACHE_DIR}"
-import sys
-from huggingface_hub import snapshot_download
-
-repo_id, local_dir = sys.argv[1], sys.argv[2]
-snapshot_download(
-    repo_id=repo_id,
-    repo_type="dataset",
-    local_dir=local_dir,
-    allow_patterns=["eval_dtu/**"],
-)
-PY
-  HF_STATUS=$?
-  set -e
-  if [[ ${HF_STATUS} -ne 0 ]]; then
-    echo "[dtu-scan24] Hugging Face snapshot failed; trying direct URLs/fallbacks" >&2
-  fi
-
-  STL_PATH="$(find "${CACHE_DIR}" -type f -name 'stl024_total.ply' -print -quit)"
-  if [[ -z "${STL_PATH}" ]]; then
-    for url in \
-      "${HF_ENDPOINT}/datasets/${HF_DATASET}/resolve/main/eval_dtu/Points/stl/stl024_total.ply" \
-      "${HF_ENDPOINT}/datasets/${HF_DATASET}/resolve/main/eval_dtu/Points/stl/stl024_total.ply?download=true"; do
-      echo "[dtu-scan24] trying ${url}"
-      if curl -fL --retry 5 --retry-delay 5 -o "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" "${url}"; then
-        break
-      fi
-    done
-  fi
-  if [[ -n "${STL_PATH}" ]]; then
-    cp -f "${STL_PATH}" "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
-  elif [[ ! -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" ]]; then
-    download_official_stl_only
-  fi
+  download_official_stl_only
 fi
 
 if [[ ! -d "${DTU_ROOT}/scan24" ]]; then
-  echo "[dtu-scan24] streaming scan24 from ${DTU_TAR_URL}"
-  TMP_EXTRACT="$(mktemp -d "${CACHE_DIR}/scan24_extract.XXXXXX")"
-  set +e
-  curl -L --retry 5 --retry-delay 5 "${DTU_TAR_URL}" \
-    | tar -xzf - -C "${TMP_EXTRACT}" --wildcards 'scan24/*' '*/scan24/*'
-  TAR_STATUS=$?
-  set -e
-  if [[ ${TAR_STATUS} -ne 0 ]]; then
-    echo "streaming extraction failed; remove partial dir: ${TMP_EXTRACT}" >&2
-    exit ${TAR_STATUS}
-  fi
-
-  SCAN_DIR="$(find "${TMP_EXTRACT}" -type d -name 'scan24' -print -quit)"
-  if [[ -z "${SCAN_DIR}" ]]; then
-    echo "could not locate scan24 after extraction under ${TMP_EXTRACT}" >&2
-    exit 4
-  fi
-
-  rm -rf "${DTU_ROOT}/scan24.tmp"
-  mv "${SCAN_DIR}" "${DTU_ROOT}/scan24.tmp"
-  rm -rf "${DTU_ROOT}/scan24"
-  mv "${DTU_ROOT}/scan24.tmp" "${DTU_ROOT}/scan24"
-  rm -rf "${TMP_EXTRACT}"
+  download_scan24_from_gdrive
 fi
 
 echo "[dtu-scan24] done"
