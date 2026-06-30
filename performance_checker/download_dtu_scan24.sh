@@ -23,7 +23,67 @@ need_cmd curl
 need_cmd tar
 
 assets_ready() {
-  [[ -d "${DTU_ROOT}/scan24" && -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" ]]
+  validate_scan24_dir "${DTU_ROOT}/scan24" >/dev/null 2>&1 \
+    && validate_stl_path "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" >/dev/null 2>&1
+}
+
+count_files() {
+  local root="$1"
+  local pattern="$2"
+  find "${root}" -type f -name "${pattern}" 2>/dev/null | wc -l | tr -d ' '
+}
+
+validate_scan24_dir() {
+  local scan_dir="$1"
+  local image_count
+  local depth_count
+
+  [[ -d "${scan_dir}" ]] || {
+    echo "missing scan24 directory: ${scan_dir}" >&2
+    return 2
+  }
+  [[ -d "${scan_dir}/images" ]] || {
+    echo "scan24 missing images directory: ${scan_dir}/images" >&2
+    return 2
+  }
+  [[ -d "${scan_dir}/sparse/0" ]] || {
+    echo "scan24 missing sparse/0 directory: ${scan_dir}/sparse/0" >&2
+    return 2
+  }
+  [[ -d "${scan_dir}/depths" ]] || {
+    echo "scan24 missing depths directory: ${scan_dir}/depths" >&2
+    return 2
+  }
+  [[ -f "${scan_dir}/points.ply" ]] || {
+    echo "scan24 missing points.ply: ${scan_dir}/points.ply" >&2
+    return 2
+  }
+
+  image_count="$(count_files "${scan_dir}/images" "*.png")"
+  depth_count="$(count_files "${scan_dir}/depths" "*.pt")"
+  [[ "${image_count}" -ge 40 ]] || {
+    echo "scan24 has too few images: ${image_count}" >&2
+    return 2
+  }
+  [[ "${depth_count}" -ge 40 ]] || {
+    echo "scan24 has too few depth maps: ${depth_count}" >&2
+    return 2
+  }
+}
+
+validate_stl_path() {
+  local stl_path="$1"
+  local stl_bytes
+
+  [[ -f "${stl_path}" ]] || {
+    echo "missing DTU STL: ${stl_path}" >&2
+    return 2
+  }
+  stl_bytes="$(wc -c < "${stl_path}" | tr -d ' ')"
+  [[ "${stl_bytes}" -ge 10000000 ]] || {
+    echo "DTU STL looks too small: ${stl_path} has ${stl_bytes} bytes" >&2
+    return 2
+  }
 }
 
 install_release_asset() {
@@ -39,16 +99,22 @@ install_release_asset() {
   echo "[dtu-scan24] source=${DTU_SCAN24_ASSET_URL}"
   rm -rf "${extract_dir}"
   mkdir -p "${extract_dir}"
-  curl -fL --retry 5 --retry-delay 5 -o "${asset_path}" "${DTU_SCAN24_ASSET_URL}"
-  LC_ALL=C tar -xzf "${asset_path}" -C "${extract_dir}"
-
-  if [[ ! -d "${extract_dir}/dtu_3dgs/scan24" ]]; then
-    echo "asset missing dtu_3dgs/scan24: ${asset_path}" >&2
-    exit 6
+  if ! curl -fL --retry 5 --retry-delay 5 -o "${asset_path}" "${DTU_SCAN24_ASSET_URL}"; then
+    echo "[dtu-scan24] GitHub asset download failed: ${DTU_SCAN24_ASSET_URL}" >&2
+    return 8
   fi
-  if [[ ! -f "${extract_dir}/DTU/Points/stl/stl024_total.ply" ]]; then
-    echo "asset missing DTU/Points/stl/stl024_total.ply: ${asset_path}" >&2
-    exit 6
+  if ! LC_ALL=C tar -xzf "${asset_path}" -C "${extract_dir}"; then
+    echo "[dtu-scan24] could not extract asset: ${asset_path}" >&2
+    return 8
+  fi
+
+  if ! validate_scan24_dir "${extract_dir}/dtu_3dgs/scan24"; then
+    echo "asset has invalid dtu_3dgs/scan24: ${asset_path}" >&2
+    return 6
+  fi
+  if ! validate_stl_path "${extract_dir}/DTU/Points/stl/stl024_total.ply"; then
+    echo "asset has invalid DTU/Points/stl/stl024_total.ply: ${asset_path}" >&2
+    return 6
   fi
 
   rm -rf "${DTU_ROOT}/scan24.tmp"
@@ -220,7 +286,14 @@ echo "[dtu-scan24] CACHE_DIR=${CACHE_DIR}"
 echo "[dtu-scan24] DTU_SCAN24_ASSET_URL=${DTU_SCAN24_ASSET_URL}"
 
 if ! assets_ready && [[ -n "${DTU_SCAN24_ASSET_URL}" ]]; then
-  install_release_asset
+  if ! install_release_asset; then
+    if [[ "${ALLOW_EXTERNAL_DTU_DOWNLOAD}" == "1" ]]; then
+      echo "[dtu-scan24] release asset unavailable; continuing with external source because ALLOW_EXTERNAL_DTU_DOWNLOAD=1" >&2
+    else
+      echo "DTU release asset is unavailable. Upload dtu_scan24_asset.tar.gz first, or set ALLOW_EXTERNAL_DTU_DOWNLOAD=1 for local asset preparation." >&2
+      exit 7
+    fi
+  fi
 fi
 
 if [[ ! -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" && "${ALLOW_EXTERNAL_DTU_DOWNLOAD}" == "1" ]]; then

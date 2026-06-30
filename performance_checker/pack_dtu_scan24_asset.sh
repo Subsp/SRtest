@@ -8,6 +8,20 @@ ASSET_OUT="${1:-${PWD}/dtu_scan24_asset.tar.gz}"
 SCAN_DIR="${DTU_ROOT}/scan24"
 STL_PATH="${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
 
+count_files() {
+  local root="$1"
+  local pattern="$2"
+  find "${root}" -type f -name "${pattern}" 2>/dev/null | wc -l | tr -d ' '
+}
+
+require_path() {
+  local path="$1"
+  if [[ ! -e "${path}" ]]; then
+    echo "missing required asset path: ${path}" >&2
+    exit 2
+  fi
+}
+
 if [[ ! -d "${SCAN_DIR}" ]]; then
   echo "missing scan24 directory: ${SCAN_DIR}" >&2
   exit 2
@@ -15,6 +29,30 @@ fi
 
 if [[ ! -f "${STL_PATH}" ]]; then
   echo "missing DTU STL: ${STL_PATH}" >&2
+  exit 2
+fi
+
+require_path "${SCAN_DIR}/images"
+require_path "${SCAN_DIR}/sparse/0"
+require_path "${SCAN_DIR}/depths"
+require_path "${SCAN_DIR}/points.ply"
+
+IMAGE_COUNT="$(count_files "${SCAN_DIR}/images" "*.png")"
+DEPTH_COUNT="$(count_files "${SCAN_DIR}/depths" "*.pt")"
+STL_BYTES="$(wc -c < "${STL_PATH}" | tr -d ' ')"
+
+if [[ "${IMAGE_COUNT}" -lt 40 ]]; then
+  echo "scan24 looks incomplete: expected >=40 images, found ${IMAGE_COUNT} in ${SCAN_DIR}/images" >&2
+  exit 2
+fi
+
+if [[ "${DEPTH_COUNT}" -lt 40 ]]; then
+  echo "scan24 looks incomplete: expected >=40 depth maps, found ${DEPTH_COUNT} in ${SCAN_DIR}/depths" >&2
+  exit 2
+fi
+
+if [[ "${STL_BYTES}" -lt 10000000 ]]; then
+  echo "DTU STL looks too small: ${STL_PATH} has ${STL_BYTES} bytes" >&2
   exit 2
 fi
 
