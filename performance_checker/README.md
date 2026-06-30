@@ -154,8 +154,13 @@ bash performance_checker/sync_single_scene_checker.sh
 After the first clone, future syncs can also use:
 
 ```bash
-CHECKOUT_DIR=/path/to/SRtest bash /path/to/SRtest/performance_checker/sync_single_scene_checker.sh
+cd /path/to/SRtest
+bash performance_checker/sync_single_scene_checker.sh
 ```
+
+The sync script defaults to the Git checkout that contains the script, so it
+will not create a nested `SRtest/SRtest` checkout when launched from inside the
+repo.
 
 ## Run Discipline
 

@@ -3,7 +3,16 @@ set -euo pipefail
 
 REPO_URL="${REPO_URL:-git@github.com:Subsp/SRtest.git}"
 BRANCH="${BRANCH:-main}"
-CHECKOUT_DIR="${CHECKOUT_DIR:-$PWD/SRtest}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [[ -z "${CHECKOUT_DIR:-}" ]]; then
+  if [[ -d "${SCRIPT_ROOT}/.git" ]]; then
+    CHECKOUT_DIR="${SCRIPT_ROOT}"
+  else
+    CHECKOUT_DIR="${PWD}/SRtest"
+  fi
+fi
 
 if [[ -d "${CHECKOUT_DIR}/.git" ]]; then
   cd "${CHECKOUT_DIR}"
