@@ -185,17 +185,26 @@ are removed after `scan24` is installed, so the retained reusable assets are:
 Override `GDRIVE_DTU_FOLDER_URL` or `POINTS_ZIP_URL` only if you need to pin a
 different mirror/source.
 
-For A100 servers, compile the Gaussian CUDA extensions with:
+For A100 servers, compile the Gaussian CUDA extensions with the low-memory
+installer. `exit status 137` or `Killed` during `ninja` means the build was
+killed by system memory pressure, so the default here is serial compilation:
 
 ```bash
+cd /path/to/SRtest
 export TORCH_CUDA_ARCH_LIST=8.0
 export CUDA_HOME=/usr/local/cuda
 export PATH="$CUDA_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 export FORCE_CUDA=1
-export MAX_JOBS=4
-python -m pip install --no-build-isolation --no-cache-dir submodules/diff-gaussian-rasterization
-python -m pip install --no-build-isolation --no-cache-dir submodules/simple-knn
+export MAX_JOBS=1
+export CMAKE_BUILD_PARALLEL_LEVEL=1
+bash performance_checker/install_gaussian_cuda_extensions.sh
+```
+
+To compile only one method root, pass it explicitly:
+
+```bash
+bash performance_checker/install_gaussian_cuda_extensions.sh /path/to/SRtest/mip-splatting
 ```
 
 ## Run Discipline
