@@ -11,6 +11,7 @@ export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 export FORCE_CUDA="${FORCE_CUDA:-1}"
 export MAX_JOBS="${MAX_JOBS:-1}"
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}"
+export PIP_NO_CACHE_DIR="${PIP_NO_CACHE_DIR:-1}"
 
 if [[ $# -gt 0 ]]; then
   METHOD_ROOTS=("$@")
@@ -35,7 +36,7 @@ print(f"[cuda-ext] cuda_available={torch.cuda.is_available()}")
 print(f"[cuda-ext] nvcc={shutil.which('nvcc')}")
 PY
 
-python -m pip install -U ninja setuptools wheel
+python -m pip install --no-cache-dir -U ninja setuptools wheel
 
 build_extension() {
   local ext_dir="$1"
