@@ -162,7 +162,7 @@ The sync script defaults to the Git checkout that contains the script, so it
 will not create a nested `SRtest/SRtest` checkout when launched from inside the
 repo.
 
-Download the single-scene DTU assets directly from the internet:
+Install the single-scene DTU assets from the GitHub Release asset:
 
 ```bash
 cd /path/to/SRtest
@@ -172,18 +172,35 @@ bash performance_checker/download_dtu_scan24.sh
 python performance_checker/checker.py check-layout --require-data
 ```
 
-The script downloads `scan24` directly from the public 2DGS Google Drive folder
-and extracts `stl024_total.ply` directly from the official DTU `Points.zip`
-with HTTP range requests. Temporary downloaded archives or extraction folders
-are removed after `scan24` is installed, so the retained reusable assets are:
+By default the script downloads:
+
+```text
+https://github.com/Subsp/SRtest/releases/download/dtu-scan24-v1/dtu_scan24_asset.tar.gz
+```
+
+and installs only these reusable assets:
 
 ```text
 /data/dtu_3dgs/scan24
 /data/DTU/Points/stl/stl024_total.ply
 ```
 
-Override `GDRIVE_DTU_FOLDER_URL` or `POINTS_ZIP_URL` only if you need to pin a
-different mirror/source.
+If the server cannot access Google Drive, prepare the asset on a local machine
+and upload it to the release:
+
+```bash
+cd /Users/ltl/Desktop/VGGTSR
+export DTU_ROOT=/path/to/local/dtu_3dgs
+export DTU_OFFICIAL_ROOT=/path/to/local/DTU
+bash performance_checker/pack_dtu_scan24_asset.sh /tmp/dtu_scan24_asset.tar.gz
+gh auth login
+bash performance_checker/upload_dtu_scan24_release_asset.sh /tmp/dtu_scan24_asset.tar.gz
+```
+
+Override `DTU_SCAN24_ASSET_URL` only if you upload the asset to a different
+release or storage endpoint. Set `ALLOW_EXTERNAL_DTU_DOWNLOAD=1` only for local
+asset preparation when direct DTU/Drive access is available; use
+`DTU_SCAN24_ASSET_URL=` at the same time to skip the GitHub asset installer.
 
 For A100 servers, compile the Gaussian CUDA extensions with the low-memory
 installer. `exit status 137` or `Killed` during `ninja` means the build was

@@ -4,6 +4,8 @@ set -euo pipefail
 DTU_ROOT="${DTU_ROOT:-/data/dtu_3dgs}"
 DTU_OFFICIAL_ROOT="${DTU_OFFICIAL_ROOT:-/data/DTU}"
 CACHE_DIR="${CACHE_DIR:-/data/_downloads/2dgs_dtu}"
+DTU_SCAN24_ASSET_URL="${DTU_SCAN24_ASSET_URL:-https://github.com/Subsp/SRtest/releases/download/dtu-scan24-v1/dtu_scan24_asset.tar.gz}"
+ALLOW_EXTERNAL_DTU_DOWNLOAD="${ALLOW_EXTERNAL_DTU_DOWNLOAD:-0}"
 POINTS_ZIP_URL="${POINTS_ZIP_URL:-https://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip}"
 GDRIVE_DTU_FOLDER_URL="${GDRIVE_DTU_FOLDER_URL:-https://drive.google.com/drive/folders/1SJFgt8qhQomHX55Q4xSvYE2C6-8tFll9}"
 
@@ -17,6 +19,51 @@ need_cmd() {
 }
 
 need_cmd python
+need_cmd curl
+need_cmd tar
+
+assets_ready() {
+  [[ -d "${DTU_ROOT}/scan24" && -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" ]]
+}
+
+install_release_asset() {
+  local asset_path="${CACHE_DIR}/dtu_scan24_asset.tar.gz"
+  local extract_dir="${CACHE_DIR}/dtu_scan24_asset_extract"
+
+  if [[ -z "${DTU_SCAN24_ASSET_URL}" ]]; then
+    echo "DTU_SCAN24_ASSET_URL is empty; skipping GitHub asset download"
+    return 0
+  fi
+
+  echo "[dtu-scan24] downloading GitHub asset"
+  echo "[dtu-scan24] source=${DTU_SCAN24_ASSET_URL}"
+  rm -rf "${extract_dir}"
+  mkdir -p "${extract_dir}"
+  curl -fL --retry 5 --retry-delay 5 -o "${asset_path}" "${DTU_SCAN24_ASSET_URL}"
+  LC_ALL=C tar -xzf "${asset_path}" -C "${extract_dir}"
+
+  if [[ ! -d "${extract_dir}/dtu_3dgs/scan24" ]]; then
+    echo "asset missing dtu_3dgs/scan24: ${asset_path}" >&2
+    exit 6
+  fi
+  if [[ ! -f "${extract_dir}/DTU/Points/stl/stl024_total.ply" ]]; then
+    echo "asset missing DTU/Points/stl/stl024_total.ply: ${asset_path}" >&2
+    exit 6
+  fi
+
+  rm -rf "${DTU_ROOT}/scan24.tmp"
+  mv "${extract_dir}/dtu_3dgs/scan24" "${DTU_ROOT}/scan24.tmp"
+  rm -rf "${DTU_ROOT}/scan24"
+  mv "${DTU_ROOT}/scan24.tmp" "${DTU_ROOT}/scan24"
+
+  mkdir -p "${DTU_OFFICIAL_ROOT}/Points/stl"
+  cp -f \
+    "${extract_dir}/DTU/Points/stl/stl024_total.ply" \
+    "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
+
+  rm -rf "${extract_dir}"
+  rm -f "${asset_path}"
+}
 
 download_official_stl_only() {
   local out_path="${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
@@ -170,14 +217,24 @@ PY
 echo "[dtu-scan24] DTU_ROOT=${DTU_ROOT}"
 echo "[dtu-scan24] DTU_OFFICIAL_ROOT=${DTU_OFFICIAL_ROOT}"
 echo "[dtu-scan24] CACHE_DIR=${CACHE_DIR}"
-echo "[dtu-scan24] GDRIVE_DTU_FOLDER_URL=${GDRIVE_DTU_FOLDER_URL}"
+echo "[dtu-scan24] DTU_SCAN24_ASSET_URL=${DTU_SCAN24_ASSET_URL}"
 
-if [[ ! -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" ]]; then
+if ! assets_ready && [[ -n "${DTU_SCAN24_ASSET_URL}" ]]; then
+  install_release_asset
+fi
+
+if [[ ! -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" && "${ALLOW_EXTERNAL_DTU_DOWNLOAD}" == "1" ]]; then
   download_official_stl_only
 fi
 
-if [[ ! -d "${DTU_ROOT}/scan24" ]]; then
+if [[ ! -d "${DTU_ROOT}/scan24" && "${ALLOW_EXTERNAL_DTU_DOWNLOAD}" == "1" ]]; then
   download_scan24_from_gdrive
+fi
+
+if ! assets_ready; then
+  echo "DTU scan24 assets are still missing." >&2
+  echo "Upload dtu_scan24_asset.tar.gz to ${DTU_SCAN24_ASSET_URL}, or set ALLOW_EXTERNAL_DTU_DOWNLOAD=1." >&2
+  exit 7
 fi
 
 echo "[dtu-scan24] done"
