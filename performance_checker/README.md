@@ -168,16 +168,31 @@ Download the single-scene DTU assets directly from the internet:
 cd /path/to/SRtest
 export DTU_ROOT=/data/dtu_3dgs
 export DTU_OFFICIAL_ROOT=/data/DTU
+export HF_ENDPOINT=https://hf-mirror.com  # optional; use when huggingface.co is blocked
 bash performance_checker/download_dtu_scan24.sh
 python performance_checker/checker.py check-layout --require-data
 ```
 
 The script streams `scan24` from the public 2DGS DTU archive and downloads the
 DTU evaluation ground truth from the public 2DGS Hugging Face dataset. It does
-not keep the 3.56 GB archive after extraction. If Hugging Face is blocked,
-use the script's printed fallback to extract `stl024_total.ply` from the
-official DTU `Points.zip`; this fallback needs temporary space for the 6.3 GB
-zip file.
+not keep the 3.56 GB archive after extraction. If Hugging Face is blocked, set
+`HF_ENDPOINT=https://hf-mirror.com`. If the mirror also fails for the ground
+truth STL, the script uses HTTP range requests to extract only
+`stl024_total.ply` from the official DTU `Points.zip` without keeping the full
+6.3 GB zip file.
+
+For A100 servers, compile the Gaussian CUDA extensions with:
+
+```bash
+export TORCH_CUDA_ARCH_LIST=8.0
+export CUDA_HOME=/usr/local/cuda
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+export FORCE_CUDA=1
+export MAX_JOBS=4
+python -m pip install --no-build-isolation --no-cache-dir submodules/diff-gaussian-rasterization
+python -m pip install --no-build-isolation --no-cache-dir submodules/simple-knn
+```
 
 ## Run Discipline
 
