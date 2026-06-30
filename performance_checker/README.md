@@ -192,6 +192,8 @@ and upload it to the release:
 cd /Users/ltl/Desktop/VGGTSR
 export DTU_ROOT=/path/to/local/dtu_3dgs
 export DTU_OFFICIAL_ROOT=/path/to/local/DTU
+DTU_SCAN24_ASSET_URL= ALLOW_EXTERNAL_DTU_DOWNLOAD=1 \
+  bash performance_checker/download_dtu_scan24.sh
 bash performance_checker/pack_dtu_scan24_asset.sh /tmp/dtu_scan24_asset.tar.gz
 gh auth login
 bash performance_checker/upload_dtu_scan24_release_asset.sh /tmp/dtu_scan24_asset.tar.gz
@@ -216,6 +218,28 @@ export FORCE_CUDA=1
 export MAX_JOBS=1
 export CMAKE_BUILD_PARALLEL_LEVEL=1
 bash performance_checker/install_gaussian_cuda_extensions.sh
+```
+
+The installer skips duplicate extension builds once
+`diff_gaussian_rasterization` and `simple_knn._C` can be imported, because the
+SP-IE-SRGS and Mip-Splatting copies are identical in this benchmark checkout.
+Full build logs are written to:
+
+```text
+/path/to/SRtest/benchmark_runs/_logs/cuda_ext/
+```
+
+If a serial build is still killed by memory pressure, add temporary swap and
+rerun:
+
+```bash
+fallocate -l 16G /data/srtest_swapfile
+chmod 600 /data/srtest_swapfile
+mkswap /data/srtest_swapfile
+swapon /data/srtest_swapfile
+bash performance_checker/install_gaussian_cuda_extensions.sh
+swapoff /data/srtest_swapfile
+rm -f /data/srtest_swapfile
 ```
 
 To compile only one method root, pass it explicitly:
