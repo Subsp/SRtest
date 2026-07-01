@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import sys
@@ -235,6 +236,16 @@ def parse_cfg_args(run_dir: Path | None) -> dict[str, Any]:
     return out
 
 
+def load_geometry_metrics_module() -> Any:
+    module_path = Path(__file__).resolve().with_name("geometry_metrics.py")
+    spec = importlib.util.spec_from_file_location("_srtest_geometry_metrics", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load geometry metrics module from: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def geometry_summary(args: argparse.Namespace) -> dict[str, Any] | None:
     if args.pred_geometry is None and args.gt_geometry is None and args.dtu_cameras is None:
         return None
@@ -245,7 +256,10 @@ def geometry_summary(args: argparse.Namespace) -> dict[str, Any] | None:
         "pred_transform": args.pred_transform,
     }
     try:
-        from performance_checker.geometry_metrics import bbox_stats, load_geometry, transform_pred_points
+        geometry_metrics = load_geometry_metrics_module()
+        bbox_stats = geometry_metrics.bbox_stats
+        load_geometry = geometry_metrics.load_geometry
+        transform_pred_points = geometry_metrics.transform_pred_points
 
         if args.pred_geometry is not None and args.pred_geometry.expanduser().resolve().is_file():
             pred = load_geometry(args.pred_geometry, args.geometry_sample_points)
