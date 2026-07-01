@@ -42,6 +42,8 @@ from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
 from gaussian_renderer import render
+from hybrid_sdfgs.blocks import ScaffoldGeometryBlock, ScaffoldGeometryConfig
+from hybrid_sdfgs.geometry import ScaffoldLoadConfig, load_scaffold_data
 from routing.param_groups import build_routed_param_groups
 from routing.train_step import routed_one_optimizer_step
 from scene import GaussianModel, Scene
@@ -296,6 +298,32 @@ def training(
     else:
         print("[SP-IE-SRGS] surface route disabled: running sp_routing_only.")
 
+    scaffold_block = None
+    scaffold_chamfer_weight = float(sp_args.sp_scaffold_chamfer_weight)
+    scaffold_normal_weight = float(sp_args.sp_scaffold_normal_weight)
+    if bool(sp_args.sp_scaffold_enable):
+        if not sp_args.sp_scaffold_path:
+            raise ValueError("--sp_scaffold_enable requires --sp_scaffold_path")
+        scaffold_data = load_scaffold_data(ScaffoldLoadConfig(path=sp_args.sp_scaffold_path))
+        scaffold_block = ScaffoldGeometryBlock(
+            ScaffoldGeometryConfig(
+                sample_size=int(sp_args.sp_scaffold_sample_size),
+                interval=int(sp_args.sp_scaffold_interval),
+                axis=sp_args.sp_scaffold_axis,
+            ),
+            scaffold_points_cpu=scaffold_data.points,
+            scaffold_normals_cpu=scaffold_data.normals,
+        )
+        print(
+            "[SP-IE-SRGS] scaffold geometry enabled: "
+            f"path={scaffold_data.source_path} "
+            f"points={scaffold_data.num_points} normals={int(scaffold_data.has_normals)} "
+            f"weights=({scaffold_chamfer_weight}, {scaffold_normal_weight}) "
+            f"sample={sp_args.sp_scaffold_sample_size} interval={sp_args.sp_scaffold_interval}"
+        )
+    else:
+        print("[SP-IE-SRGS] scaffold geometry disabled.")
+
     viewpoint_stack = None
     ema_loss_for_log = 0.0
     max_points_notice_shown = False
@@ -376,6 +404,25 @@ def training(
                 metrics.update(surface_metrics)
                 if surface_loss is not None:
                     loss_geo = loss_geo + surface_loss
+            if scaffold_block is not None and (scaffold_chamfer_weight > 0.0 or scaffold_normal_weight > 0.0):
+                scaffold_chamfer, scaffold_normal, scaffold_info = scaffold_block.compute(
+                    xyz_all=gaussians.get_xyz,
+                    rotations_raw_all=gaussians._rotation,
+                    scales_all=gaussians.get_scaling,
+                    iteration=iteration,
+                )
+                scaffold_loss = scaffold_chamfer_weight * scaffold_chamfer + scaffold_normal_weight * scaffold_normal
+                loss_geo = loss_geo + scaffold_loss
+                metrics.update(
+                    {
+                        "scaffold_total": float(scaffold_loss.detach().item()),
+                        "scaffold_chamfer": float(scaffold_chamfer.detach().item()),
+                        "scaffold_normal": float(scaffold_normal.detach().item()),
+                        "scaffold_selected_gs": float(scaffold_info.get("selected_gs", 0.0)),
+                        "scaffold_selected": float(scaffold_info.get("selected_scaffold", 0.0)),
+                        "scaffold_has_normals": float(scaffold_info.get("has_normals", 0.0)),
+                    }
+                )
             return {
                 "loss": loss_geo,
                 "render_pkg": render_pkg,
@@ -638,6 +685,18 @@ def build_parser():
     parser.add_argument("--sp_lambda_normal_smooth", type=float, default=0.01)
     parser.add_argument("--sp_surface_ramp_start_iter", type=int, default=1000)
     parser.add_argument("--sp_surface_ramp_end_iter", type=int, default=5000)
+    parser.add_argument("--sp_scaffold_enable", action="store_true")
+    parser.add_argument("--sp_scaffold_path", type=str, default="")
+    parser.add_argument("--sp_scaffold_sample_size", type=int, default=2048)
+    parser.add_argument("--sp_scaffold_interval", type=int, default=1)
+    parser.add_argument(
+        "--sp_scaffold_axis",
+        type=str,
+        default="min_scale",
+        choices=["min_scale", "max_scale", "x", "y", "z"],
+    )
+    parser.add_argument("--sp_scaffold_chamfer_weight", type=float, default=0.0)
+    parser.add_argument("--sp_scaffold_normal_weight", type=float, default=0.0)
     return parser, lp, op, pp
 
 
