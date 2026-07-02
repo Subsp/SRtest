@@ -7,6 +7,8 @@ ASSET_OUT="${1:-${PWD}/dtu_scan24_asset.tar.gz}"
 
 SCAN_DIR="${DTU_ROOT}/scan24"
 STL_PATH="${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
+OBSMASK_PATH="${DTU_OFFICIAL_ROOT}/ObsMask/ObsMask24_10.mat"
+PLANE_PATH="${DTU_OFFICIAL_ROOT}/ObsMask/Plane24.mat"
 
 count_files() {
   local root="$1"
@@ -29,6 +31,16 @@ fi
 
 if [[ ! -f "${STL_PATH}" ]]; then
   echo "missing DTU STL: ${STL_PATH}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${OBSMASK_PATH}" ]]; then
+  echo "missing DTU ObsMask: ${OBSMASK_PATH}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${PLANE_PATH}" ]]; then
+  echo "missing DTU Plane: ${PLANE_PATH}" >&2
   exit 2
 fi
 
@@ -70,9 +82,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "${STAGE_DIR}/dtu_3dgs" "${STAGE_DIR}/DTU/Points/stl"
+mkdir -p "${STAGE_DIR}/dtu_3dgs" "${STAGE_DIR}/DTU/Points/stl" "${STAGE_DIR}/DTU/ObsMask"
 ln -s "${SCAN_DIR}" "${STAGE_DIR}/dtu_3dgs/scan24"
 ln -s "${STL_PATH}" "${STAGE_DIR}/DTU/Points/stl/stl024_total.ply"
+ln -s "${OBSMASK_PATH}" "${STAGE_DIR}/DTU/ObsMask/ObsMask24_10.mat"
+ln -s "${PLANE_PATH}" "${STAGE_DIR}/DTU/ObsMask/Plane24.mat"
 
 cat > "${STAGE_DIR}/manifest.json" <<EOF
 {
@@ -81,7 +95,9 @@ cat > "${STAGE_DIR}/manifest.json" <<EOF
   "scene": "scan24",
   "layout": {
     "scan24": "dtu_3dgs/scan24",
-    "stl": "DTU/Points/stl/stl024_total.ply"
+    "stl": "DTU/Points/stl/stl024_total.ply",
+    "obs_mask": "DTU/ObsMask/ObsMask24_10.mat",
+    "plane": "DTU/ObsMask/Plane24.mat"
   }
 }
 EOF

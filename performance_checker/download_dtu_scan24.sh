@@ -24,7 +24,8 @@ need_cmd tar
 
 assets_ready() {
   validate_scan24_dir "${DTU_ROOT}/scan24" >/dev/null 2>&1 \
-    && validate_stl_path "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" >/dev/null 2>&1
+    && validate_stl_path "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" >/dev/null 2>&1 \
+    && validate_dtu_eval_assets "${DTU_OFFICIAL_ROOT}" >/dev/null 2>&1
 }
 
 count_files() {
@@ -86,6 +87,18 @@ validate_stl_path() {
   }
 }
 
+validate_dtu_eval_assets() {
+  local dtu_official_root="$1"
+  [[ -f "${dtu_official_root}/ObsMask/ObsMask24_10.mat" ]] || {
+    echo "missing DTU ObsMask: ${dtu_official_root}/ObsMask/ObsMask24_10.mat" >&2
+    return 2
+  }
+  [[ -f "${dtu_official_root}/ObsMask/Plane24.mat" ]] || {
+    echo "missing DTU Plane: ${dtu_official_root}/ObsMask/Plane24.mat" >&2
+    return 2
+  }
+}
+
 install_release_asset() {
   local asset_path="${CACHE_DIR}/dtu_scan24_asset.tar.gz"
   local extract_dir="${CACHE_DIR}/dtu_scan24_asset_extract"
@@ -116,6 +129,10 @@ install_release_asset() {
     echo "asset has invalid DTU/Points/stl/stl024_total.ply: ${asset_path}" >&2
     return 6
   fi
+  if ! validate_dtu_eval_assets "${extract_dir}/DTU"; then
+    echo "asset has invalid DTU/ObsMask assets: ${asset_path}" >&2
+    return 6
+  fi
 
   rm -rf "${DTU_ROOT}/scan24.tmp"
   mv "${extract_dir}/dtu_3dgs/scan24" "${DTU_ROOT}/scan24.tmp"
@@ -126,6 +143,13 @@ install_release_asset() {
   cp -f \
     "${extract_dir}/DTU/Points/stl/stl024_total.ply" \
     "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
+  mkdir -p "${DTU_OFFICIAL_ROOT}/ObsMask"
+  cp -f \
+    "${extract_dir}/DTU/ObsMask/ObsMask24_10.mat" \
+    "${DTU_OFFICIAL_ROOT}/ObsMask/ObsMask24_10.mat"
+  cp -f \
+    "${extract_dir}/DTU/ObsMask/Plane24.mat" \
+    "${DTU_OFFICIAL_ROOT}/ObsMask/Plane24.mat"
 
   rm -rf "${extract_dir}"
   rm -f "${asset_path}"
@@ -313,4 +337,10 @@ fi
 echo "[dtu-scan24] done"
 test -d "${DTU_ROOT}/scan24"
 test -f "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply"
-du -sh "${DTU_ROOT}/scan24" "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" 2>/dev/null || true
+test -f "${DTU_OFFICIAL_ROOT}/ObsMask/ObsMask24_10.mat"
+test -f "${DTU_OFFICIAL_ROOT}/ObsMask/Plane24.mat"
+du -sh \
+  "${DTU_ROOT}/scan24" \
+  "${DTU_OFFICIAL_ROOT}/Points/stl/stl024_total.ply" \
+  "${DTU_OFFICIAL_ROOT}/ObsMask/ObsMask24_10.mat" \
+  "${DTU_OFFICIAL_ROOT}/ObsMask/Plane24.mat" 2>/dev/null || true

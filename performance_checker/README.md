@@ -94,16 +94,16 @@ Rendering:
 
 Geometry:
 
-- DTU: use the self-contained `performance_checker/geometry_metrics.py` script
-  against `DTU_OFFICIAL_ROOT/Points/stl/stl024_total.ply` for the single-scene
-  run. For 3DGS/COLMAP-style DTU assets, pass
-  `--pred-transform dtu-colmap-to-world --dtu-cameras <scan>/cameras.npz` so the
-  exported Gaussian point cloud is first mapped back to DTU world coordinates.
-  It writes `accuracy`, `completion`, `chamfer_l1`, transform metadata, and
-  bounding-box diagnostics.
-- The lightweight DTU script is intended for fast same-scene triage. For a
-  paper-grade DTU number, run the official DTU visibility/mask culling protocol
-  before the final Chamfer calculation.
+- DTU: use `performance_checker/dtu_official_pcd_metrics.py`. It maps
+  3DGS/COLMAP-style PLY exports back to DTU world coordinates, then calls the
+  DTU evaluation code under `gs2mesh/evaluation/DTU/eval_code` in `pcd` mode.
+  This applies the DTU `ObsMask` / `Plane` culling and reports `accuracy`,
+  `completion`, and `chamfer_l1` from the official-style `mean_d2s`,
+  `mean_s2d`, and `overall` values.
+- `performance_checker/geometry_metrics.py` is only a fast diagnostic. It does
+  not apply DTU observation masks, ground-plane filtering, or the official
+  `max_dist` truncation, so its DTU values can be an order of magnitude larger
+  and must not be used for the final DTU table.
 - Tanks and Temples: use the same self-contained geometry script if expanding
   beyond the single-scene DTU run. For formal T&T leaderboard-equivalent
   numbers, pin and document the official T&T toolbox separately.
@@ -190,6 +190,8 @@ and installs only these reusable assets:
 ```text
 /data/dtu_3dgs/scan24
 /data/DTU/Points/stl/stl024_total.ply
+/data/DTU/ObsMask/ObsMask24_10.mat
+/data/DTU/ObsMask/Plane24.mat
 ```
 
 If the server cannot access Google Drive, prepare the asset on a local machine
