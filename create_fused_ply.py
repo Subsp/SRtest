@@ -11,15 +11,23 @@ if __name__ == "__main__":
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
     parser.add_argument("--output_ply", type=str, default="./output.ply")
+    parser.add_argument("--iteration", type=int, default=30000)
     parser.add_argument("--quiet", action="store_true")
     args = get_combined_args(parser)
     print("create fused ply for " + args.model_path)
+    print("using iteration " + str(args.iteration))
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
     dataset = model.extract(args)
     gaussians = GaussianModel(dataset.sh_degree)
-        
-    gaussians.load_ply(os.path.join(dataset.model_path, "point_cloud", "iteration_30000", "point_cloud.ply"))
+
+    point_cloud_path = os.path.join(
+        dataset.model_path,
+        "point_cloud",
+        f"iteration_{args.iteration}",
+        "point_cloud.ply",
+    )
+    gaussians.load_ply(point_cloud_path)
     gaussians.save_fused_ply(args.output_ply)
     

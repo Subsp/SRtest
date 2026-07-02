@@ -226,6 +226,13 @@ def training(
     tb_writer = _prepare_output_and_logger(sp_args)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
+    if sp_args.sp_init_ply:
+        init_ply = Path(sp_args.sp_init_ply).expanduser().resolve()
+        if not init_ply.is_file():
+            raise FileNotFoundError(f"--sp_init_ply not found: {init_ply}")
+        print(f"[SP-IE-SRGS] initializing Gaussians from PLY: {init_ply}")
+        gaussians.load_ply(str(init_ply))
+        gaussians.max_radii2D = torch.zeros((gaussians.get_xyz.shape[0]), device="cuda")
     gaussians.training_setup(opt)
     if checkpoint:
         model_params, first_iter = torch.load(checkpoint)
@@ -669,6 +676,12 @@ def build_parser():
     parser.add_argument("--sp_allow_missing_prior", action="store_true")
     parser.add_argument("--sp_allow_missing_lr_anchor", action="store_true")
     parser.add_argument("--sp_lr_fallback_downscale", type=float, default=4.0)
+    parser.add_argument(
+        "--sp_init_ply",
+        type=str,
+        default="",
+        help="Optional 3DGS-format PLY used to initialize Gaussians before optimizer setup.",
+    )
 
     parser.add_argument("--sp_geo_lambda_dssim", type=float, default=0.2)
     parser.add_argument("--sp_app_l1_weight", type=float, default=0.05)
